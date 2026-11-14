@@ -49,10 +49,10 @@ jobs:
             echo "STEP 5 licenses"
             for _ in $(seq 1 50); do echo y; done | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
             echo "STEP 6 install platform"
-            for _ in $(seq 1 50); do echo y; done | "$SDKMANAGER" "platform-tools" "platforms;android-37" || {
-              echo "STEP 6 fallback: 不带应答重试一次，抓真实报错"
-              "$SDKMANAGER" "platform-tools" "platforms;android-37"
-            }
+            # SDK 37 是小版本命名（android-37.0），而且在 canary 频道里；
+            # build-tools 用 AGP 9.4.1 默认的 36.0.0
+            for _ in $(seq 1 50); do echo y; done | "$SDKMANAGER" --channel=3 \
+              "platform-tools" "platforms;android-37.0" "build-tools;36.0.0"
           ) > /tmp/sdk.log 2>&1
           rc=$?
           tail -40 /tmp/sdk.log
