@@ -114,9 +114,16 @@ fun SettingsPage(connected: Boolean, scoped: Boolean, root: Boolean) {
                 PuiListRow(
                     icon = PuiIcon.Palette,
                     title = "PUI 设计系统",
-                    subtitle = "界面骨架，来自 PUIInstaller",
+                    subtitle = "界面骨架 · 作者 天伞桜",
                     showChevron = true,
                     onClick = { Shell.openUrl(ctx, Const.PUI) }
+                )
+                PuiListRow(
+                    icon = PuiIcon.Heart,
+                    title = "天伞桜",
+                    subtitle = "PUI 作者 · coolapk.com/u/540690",
+                    showChevron = true,
+                    onClick = { Shell.openUrl(ctx, Const.PUI_AUTHOR) }
                 )
                 PuiListRow(
                     icon = PuiIcon.Info,

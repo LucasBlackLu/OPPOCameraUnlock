@@ -7,7 +7,10 @@ object Const {
     const val RELEASES = "$GITHUB/releases/latest"
     const val COOLAPK = "https://www.coolapk.com/u/26800889"
 
-    /** 致谢里用到的两个上游。 */
+    /** 致谢里用到的上游。 */
     const val LIBXPOSED = "https://github.com/libxposed/api"
     const val PUI = "https://github.com/sakurakingfifth-debug/PUIInstaller"
+
+    /** PUI 作者「天伞桜」的酷安主页。 */
+    const val PUI_AUTHOR = "https://www.coolapk.com/u/540690"
 }
