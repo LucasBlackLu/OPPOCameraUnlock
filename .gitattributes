@@ -1,0 +1,21 @@
+# 统一换行，避免 WSL/Windows 之间来回推把换行改脏
+* text=auto eol=lf
+
+# Windows 侧脚本保持 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# gradlew 必须是 LF，且要在 CI 里有可执行位
+gradlew text eol=lf
+gradlew.bat text eol=crlf
+
+# 二进制，别做换行转换
+*.jar binary
+*.png binary
+*.webp binary
+*.so binary
+*.zip binary
+*.dex binary
+
+# 相机那套 LUT / ini 是二进制或原样数据，别动
+app/src/main/assets/basictone/** -text
