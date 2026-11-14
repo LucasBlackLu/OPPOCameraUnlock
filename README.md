@@ -111,6 +111,10 @@ Gradle 9.7.1 / AGP 9.4.1 / Kotlin 2.4.20 / compileSdk 37 / minSdk 33。
 git tag v2.0.0 && git push origin v2.0.0
 ```
 
+> CI 里踩到的坑：`compileSdk 37` 对应的包名不是 `platforms;android-37`，而是
+> `platforms;android-37.0`，而且只在 **canary 频道**里 —— 所以装 SDK 的命令是
+> `sdkmanager --channel=3 "platforms;android-37.0" "build-tools;36.0.0"`。
+
 ## 实测
 
 - `deployed (extracted=29) -> .../campalette/basictone files=34`，二次启动走 `deployed (cached)`
