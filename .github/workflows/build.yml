@@ -25,8 +25,8 @@ jobs:
           java-version: '21'
 
       # 不依赖 runner 里的 /usr/local/lib/android/sdk（权限/布局都不稳），
-      # 直接在用户目录装一份 cmdline-tools，再装 platform 37（compileSdk 37）。
-      # 失败时把 stderr 打成 ::error::，这样没有 token 也能从 check-runs 注释里看到原因。
+      # 在用户目录自装一份 cmdline-tools，再装 compileSdk 37 对应的 platform。
+      # 失败时把最后几行打成 ::error::，没有 token 也能从 check-runs 注释里看到原因。
       - name: 准备 Android SDK
         run: |
           set +e
@@ -34,21 +34,19 @@ jobs:
             set -e
             SDK="$HOME/android-sdk"
             mkdir -p "$SDK/cmdline-tools"
-            echo "STEP 1 download cmdline-tools"
+
             curl -fsSL -o /tmp/cmdline.zip \
               https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-            echo "STEP 2 unzip"
             unzip -q /tmp/cmdline.zip -d /tmp/cmdline
-            echo "STEP 3 move"
             mv /tmp/cmdline/cmdline-tools "$SDK/cmdline-tools/latest"
+
             echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
             echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+
             SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
-            echo "STEP 4 version"
             "$SDKMANAGER" --version
-            echo "STEP 5 licenses"
             for _ in $(seq 1 50); do echo y; done | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-            echo "STEP 6 install platform"
+
             # SDK 37 是小版本命名（android-37.0），而且在 canary 频道里；
             # build-tools 用 AGP 9.4.1 默认的 36.0.0
             for _ in $(seq 1 50); do echo y; done | "$SDKMANAGER" --channel=3 \
