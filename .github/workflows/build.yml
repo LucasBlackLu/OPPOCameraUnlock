@@ -26,24 +26,31 @@ jobs:
 
       # 不依赖 runner 里的 /usr/local/lib/android/sdk（权限/布局都不稳），
       # 直接在用户目录装一份 cmdline-tools，再装 platform 37（compileSdk 37）。
+      # 失败时把 stderr 打成 ::error::，这样没有 token 也能从 check-runs 注释里看到原因。
       - name: 准备 Android SDK
         run: |
-          set -e
-          SDK="$HOME/android-sdk"
-          mkdir -p "$SDK/cmdline-tools"
-          curl -sSL -o /tmp/cmdline.zip \
-            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip -q /tmp/cmdline.zip -d /tmp/cmdline
-          mv /tmp/cmdline/cmdline-tools "$SDK/cmdline-tools/latest"
-
-          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
-
-          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
-          "$SDKMANAGER" --version
-          yes | "$SDKMANAGER" --licenses > /dev/null || true
-          # build-tools 不写死版本，交给 AGP 自己拉
-          "$SDKMANAGER" "platform-tools" "platforms;android-37"
+          set +e
+          (
+            set -e
+            SDK="$HOME/android-sdk"
+            mkdir -p "$SDK/cmdline-tools"
+            curl -fsSL -o /tmp/cmdline.zip \
+              https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+            unzip -q /tmp/cmdline.zip -d /tmp/cmdline
+            mv /tmp/cmdline/cmdline-tools "$SDK/cmdline-tools/latest"
+            echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+            echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+            SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+            "$SDKMANAGER" --version
+            yes | "$SDKMANAGER" --licenses > /dev/null
+            "$SDKMANAGER" "platform-tools" "platforms;android-37"
+          ) > /tmp/sdk.log 2>&1
+          rc=$?
+          tail -40 /tmp/sdk.log
+          if [ $rc -ne 0 ]; then
+            tail -10 /tmp/sdk.log | sed 's/^/::error::/'
+            exit $rc
+          fi
 
       - name: Gradle 缓存
         uses: gradle/actions/setup-gradle@v4
