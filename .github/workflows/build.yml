@@ -47,14 +47,17 @@ jobs:
             echo "STEP 4 version"
             "$SDKMANAGER" --version
             echo "STEP 5 licenses"
-            yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+            for _ in $(seq 1 50); do echo y; done | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
             echo "STEP 6 install platform"
-            "$SDKMANAGER" "platform-tools" "platforms;android-37"
+            for _ in $(seq 1 50); do echo y; done | "$SDKMANAGER" "platform-tools" "platforms;android-37" || {
+              echo "STEP 6 fallback: 不带应答重试一次，抓真实报错"
+              "$SDKMANAGER" "platform-tools" "platforms;android-37"
+            }
           ) > /tmp/sdk.log 2>&1
           rc=$?
           tail -40 /tmp/sdk.log
           if [ $rc -ne 0 ]; then
-            { echo "rc=$rc"; grep -iE "error|fail|exception|not accepted|warning|step " /tmp/sdk.log | tail -8; } | sed 's/^/::error::/'
+            { echo "rc=$rc"; tail -8 /tmp/sdk.log; } | sed 's/^/::error::/'
             exit $rc
           fi
 
