@@ -6,14 +6,13 @@ object Const {
     const val GITHUB = "https://github.com/LucasBlackLu/OPPOCameraUnlock"
     const val RELEASES = "$GITHUB/releases/latest"
 
-    /** PUI 设计系统：作者 KaMuaMua2020，仓库在其 fork 上。 */
-    const val PUI = "https://github.com/sakurakingfifth-debug/PUIInstaller"
-    const val PUI_AUTHOR_GITHUB = "https://github.com/KaMuaMua2020"
-    const val PUI_AUTHOR_COOLAPK = "https://www.coolapk.com/u/26800889"
-
-    /** 酷安 天伞桜。 */
-    const val COOLAPK = "https://www.coolapk.com/u/540690"
-
     /** 模块框架。 */
     const val LIBXPOSED = "https://github.com/libxposed/api"
+
+    /** PUI 设计系统：作者 天伞桜（GitHub sakurakingfifth-debug，酷安 26800889）。 */
+    const val PUI = "https://github.com/sakurakingfifth-debug/PUIInstaller"
+    const val PUI_AUTHOR_COOLAPK = "https://www.coolapk.com/u/26800889"
+
+    /** 灵感构图参考：com.linggan.goutu，作者 KaMuaMua2020。 */
+    const val LINGGAN_AUTHOR = "https://github.com/KaMuaMua2020"
 }
