@@ -1,0 +1,14 @@
+.gradle/
+build/
+app/build/
+.kotlin/
+.idea/
+local.properties
+*.apk
+*.log
+
+# 提取包（43 MB，构建 assets 时用，不进仓库）
+/basictone.zip
+
+# 调试期反编译 dump（gen 脚本保留）
+tools/*.txt

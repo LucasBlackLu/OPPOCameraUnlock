@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 背景：深灰蓝渐变 + 右上柔光，白机身压得住；莫奈取色时系统只用单色层 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="0"
+                android:startY="0"
+                android:endX="108"
+                android:endY="108">
+                <item android:offset="0" android:color="#FF3C3C46" />
+                <item android:offset="0.55" android:color="#FF26262E" />
+                <item android:offset="1" android:color="#FF141419" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 右上柔光 -->
+    <path
+        android:pathData="M108,0 m-44,0 a44,44 0 1,0 88,0 a44,44 0 1,0 -88,0"
+        android:fillColor="#14FFFFFF" />
+
+</vector>

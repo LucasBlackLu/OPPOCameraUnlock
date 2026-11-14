@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  单色层（ColorOS 莫奈取色 / Android 13+ 主题图标专用）：
+  只留机身剪影 + 镜头环 + 星光，系统按壁纸取色整体染色。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="0.72"
+        android:scaleY="0.72">
+
+        <!-- 取景框凸起 -->
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M42,32 h24 a6,6 0 0 1 6,6 v6 h-36 v-6 a6,6 0 0 1 6,-6 z" />
+
+        <!-- 机身 + 镜头挖空 -->
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M38,40 h32 a12,12 0 0 1 12,12 v16 a12,12 0 0 1 -12,12 h-32 a12,12 0 0 1 -12,-12 v-16 a12,12 0 0 1 12,-12 z M54,45 a15,15 0 1,0 0.1,0 z" />
+
+        <!-- 镜头环（外 13.5 / 内 8.5） -->
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M54,60 m-13.5,0 a13.5,13.5 0 1,0 27,0 a13.5,13.5 0 1,0 -27,0 M54,60 m-8.5,0 a8.5,8.5 0 1,0 17,0 a8.5,8.5 0 1,0 -17,0" />
+
+        <!-- 星光 -->
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M76,24.5 C77.4,28.6 79.4,30.6 83.5,32 C79.4,33.4 77.4,35.4 76,39.5 C74.6,35.4 72.6,33.4 68.5,32 C72.6,30.6 74.6,28.6 76,24.5 Z" />
+    </group>
+</vector>

@@ -1,0 +1,768 @@
+package com.oppocamera.unlock.hook
+
+import android.app.Application
+import android.hardware.HardwareBuffer
+import android.util.Log
+import com.oppocamera.unlock.aicomp.AiBridge
+import com.oppocamera.unlock.aicomp.GyroTracker
+import io.github.libxposed.api.XposedModule
+import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
+import java.io.File
+import java.lang.reflect.Modifier
+import java.util.zip.ZipFile
+
+/**
+ * OPPO 相机解锁（libxposed API 101）。
+ *
+ * 两个功能：
+ *
+ *  1. 调色盘：相机的 LUT 应该在 /odm/etc/camera/basictone/palette，这台机器没有，
+ *     强开 feature 会在 libCombineLut 里 std::bad_alloc。做法是把提取包整包部署到
+ *     相机自己的 files 目录，再把 CombineLutHelper.init 的路径参数换过去。
+ *
+ *  2. 灵感构图（AI 构图）：相机本机带这套能力，但 feature 默认关着。
+ *     这里把 CameraConfig / FeatureConfigureAdapter 里对应的 key 统统放行。
+ */
+class CameraPaletteModule : XposedModule() {
+
+    companion object {
+        private const val TAG = "CamUnlock"
+        private const val PKG = "com.oplus.camera"
+        private const val CONFIG = "com.oplus.camera.configure.CameraConfig"
+        private const val ADAPTER = "com.oplus.ocs.camera.config.FeatureConfigureAdapter"
+        private const val COMBINE = "com.oplus.ocs.camera.CombineLutHelper"
+        private const val COMBINE_SDK =
+            "com.oplus.ocs.camera.ipusdk.processunit.combinelut.CombineLutProcessUnitSDK"
+
+        private const val LUT_SIZE = 49152L
+        private const val ODM = "/odm/etc/camera/basictone"
+
+        /** 提取包版本：assets/basictone 是从 X10 Pro Max 的 /odm/etc/camera/basictone 提取的。 */
+        private const val EXTRACT = "x10-1.1.0"
+        private const val ASSET_ROOT = "assets/basictone/"
+
+        /** 调色盘 */
+        private const val KEY_PALETTE = "com.oplus.feature.color.palette.support"
+
+        /** 灵感构图（AI 构图）相关的几个 key，名字在不同版本里不一样，全给。 */
+        private val AI_KEYS = listOf(
+            "com.oplus.camera.feature.ai_composition",
+            "com.oplus.feature.ai_composition",
+            "com.oplus.feature.aicomposition.support",
+            "com.oplus.feature.aicomposition.realscene.support",
+            "com.oplus.feature.aicomposition.inspiration.support",
+            "ai_composition",
+            "aicomposition"
+        )
+
+        private val FORCED = AI_KEYS + KEY_PALETTE
+
+        /**
+         * 补进特性表的只有一个：相机里 feature 名的命名空间是 com.oplus.camera.feature.*，
+         * 别的写法塞进去只会变成没人认识的条目。
+         */
+        private val ADAPTER_EXTRA = listOf("com.oplus.camera.feature.ai_composition")
+
+        /** 临时：打印构图入口的方法调用，确认相机走没走这套 API。 */
+        private const val TRACE_COMPOSITION = false
+
+        /** 临时：跟踪「灵感推荐」这条链路的鉴权/网络，看它卡在哪一步。 */
+        private const val TRACE_INSPIRATION = true
+
+        private val INSPIRATION_CLASSES = listOf(
+            "com.oplus.camera.feature.aicomposition.inspiration.account.AICompositionAccountManager",
+            "com.oplus.camera.feature.aicomposition.inspiration.network.core.InspirationNetworkException",
+            "pb.b",   // InspirationAuthHeaderProvider（混淆名，本版 OplusCamera 7.006.121）
+            "pb.b\$a"
+        )
+
+        /** 构图入口，不同版本类名不一样，两个都试。 */
+        private val COMPOSITION_ENTRIES = listOf(
+            "com.oplus.ocs.camera.OplusAICompositionHelper",
+            "com.oplus.camera.aicomposition.OplusAIComposition"
+        )
+
+        /** 预览取帧类的混淆名（dex 里就这么短）。 */
+        private val FRAME_CLASSES = listOf("wb.r", "rb.t")
+    }
+
+    private val lock = Any()
+    private val logged = HashSet<String>()
+    @Volatile private var adapterLogged = false
+    @Volatile private var trackLogged = false
+
+    @Volatile private var deployed = false
+    @Volatile private var settingPath: String? = null
+    @Volatile private var palettePath: String? = null
+    @Volatile private var odtPath: String? = null
+
+    override fun onPackageLoaded(param: PackageLoadedParam) {
+        if (param.packageName != PKG) return
+        val cl = param.defaultClassLoader
+
+        runCatching { hookConfig(cl) }.onFailure { log("hookConfig: $it") }
+        runCatching { hookAdapter(cl) }.onFailure { log("hookAdapter: $it") }
+        runCatching { hookInit(cl, COMBINE) }.onFailure { log("hookInit: $it") }
+        runCatching { hookInit(cl, COMBINE_SDK) }.onFailure { log("hookInitSdk: $it") }
+        runCatching { hookPaletteColors(cl) }.onFailure { log("hookPaletteColors: $it") }
+        runCatching { hookComposition(cl) }.onFailure { log("hookComposition: $it") }
+        if (TRACE_INSPIRATION) runCatching { traceInspiration(cl) }.onFailure { log("traceInspiration: $it") }
+
+        log("ready · api=${getApiVersion()} · pid=${android.os.Process.myPid()}")
+    }
+
+    // ------------------------------------------------------------ feature key
+
+    private fun hookConfig(cl: ClassLoader) {
+        val cls = runCatching { cl.loadClass(CONFIG) }.getOrNull()
+        if (cls == null) {
+            log("WARN: $CONFIG not found")
+            return
+        }
+        var n = 0
+        cls.declaredMethods.forEach { m ->
+            if (m.name != "d" || m.parameterTypes.size != 3) return@forEach
+            if (m.parameterTypes[0] != String::class.java) return@forEach
+            if (m.returnType != Boolean::class.javaPrimitiveType) return@forEach
+            runCatching {
+                hook(m).intercept { chain ->
+                    val key = chain.getArg(0) as? String ?: return@intercept chain.proceed()
+                    val lower = key.lowercase()
+                    if (key == KEY_PALETTE ||
+                        lower.contains("aicomposition") || lower.contains("ai_composition")
+                    ) true else chain.proceed()
+                }
+                n++
+            }.onFailure { log("hook CameraConfig.d: $it") }
+        }
+        log("CameraConfig.d hooked=$n")
+    }
+
+    /**
+     * 特性表：FeatureConfigureAdapter 负责告诉界面哪些 feature 可用。
+     * 它返回的是集合/映射，这里在出口把缺的 feature 名补进去。
+     */
+    private fun hookAdapter(cl: ClassLoader) {
+        val cls = runCatching { cl.loadClass(ADAPTER) }.getOrNull()
+        if (cls == null) {
+            log("WARN: $ADAPTER not found")
+            return
+        }
+        var n = 0
+        cls.declaredMethods.forEach { m ->
+            val rt = m.returnType
+            val isCollection = Collection::class.java.isAssignableFrom(rt)
+            val isMap = Map::class.java.isAssignableFrom(rt)
+            if (!isCollection && !isMap) return@forEach
+            runCatching {
+                hook(m).intercept { chain ->
+                    val result = chain.proceed()
+                    if (result != null) {
+                        // 元素是 String 的集合才补；别的类型（FeatureKey 之类）一律不碰
+                        runCatching { patchFeatureContainer(result) }
+                            .onSuccess { added ->
+                                if (added.isNotEmpty()) log("adapter +$added #${m.name}")
+                            }
+                    }
+                    if (!adapterLogged && result != null) {
+                        adapterLogged = true
+                        val sample = runCatching {
+                            (result as? Collection<*>)?.take(60)?.joinToString { it?.toString().orEmpty() }
+                                ?: (result as? Map<*, *>)?.keys?.take(3)?.joinToString { it?.toString().orEmpty() }
+                                ?: result.javaClass.simpleName
+                        }.getOrDefault("?")
+                        log("adapter sample: $sample")
+                        runCatching {
+                            val cls = (result as? Collection<*>)?.firstOrNull()?.javaClass
+                            if (cls != null) {
+                                log(
+                                    "FeatureKey cls=${cls.name} enum=${cls.isEnum} " +
+                                        "ctors=${cls.declaredConstructors.joinToString { c -> c.parameterTypes.joinToString { it.simpleName } }}"
+                                )
+                            }
+                        }
+                    }
+                    result
+                }
+                n++
+            }.onFailure { log("hook adapter#${m.name}: $it") }
+        }
+        log("FeatureConfigureAdapter hooked=$n")
+    }
+
+    /**
+     * 只往元素是 String 的集合里补 feature 名；返回补进去的名字。
+     *
+     * 只碰 Collection，不碰 Map：`getConflictMap` 那种 map 的 key 是
+     * `com.oplus.ocs.camera.config.FeatureKey`，塞 String 进去会让相机在
+     * `FeatureConflictDecision.f()` 里 ClassCastException 闪退（踩过）。
+     */
+    private fun patchFeatureContainer(container: Any): List<String> {
+        val added = mutableListOf<String>()
+        runCatching {
+            if (container !is MutableCollection<*>) return added
+            // 空集合类型不明，一律不碰；元素不是 String 的也不碰
+            val first = container.firstOrNull() ?: return added
+            if (first !is String) return added
+            @Suppress("UNCHECKED_CAST")
+            val list = container as MutableCollection<Any?>
+            ADAPTER_EXTRA.filterNot { name -> list.any { it == name } }.forEach {
+                list.add(it)
+                added += it
+            }
+        }
+        return added
+    }
+    // ------------------------------------------------------------ combine lut
+
+    private fun hookInit(cl: ClassLoader, className: String) {
+        val cls = runCatching { cl.loadClass(className) }.getOrNull()
+        if (cls == null) {
+            log("WARN: $className not found")
+            return
+        }
+        var n = 0
+        cls.declaredMethods.forEach { m ->
+            if (m.name != "init" || m.parameterTypes.size != 6) return@forEach
+            runCatching {
+                hook(m).intercept { chain ->
+                    val arg5 = chain.getArg(5) as? String
+                    if (arg5 == null || !arg5.contains("palette")) {
+                        return@intercept chain.proceed()
+                    }
+                    if (!ensureDeployed()) {
+                        return@intercept chain.proceed()
+                    }
+                    val setting = settingPath ?: return@intercept chain.proceed()
+                    val palette = palettePath ?: return@intercept chain.proceed()
+                    val odt = odtPath
+
+                    val args = chain.args.toMutableList()
+                    args[2] = setting
+                    args[5] = palette
+
+                    var result = chain.proceed(args.toTypedArray())
+                    var code = (result as? Number)?.toInt() ?: 0
+                    if (code != 0 && odt != null) {
+                        args[1] = odt
+                        result = chain.proceed(args.toTypedArray())
+                        code = (result as? Number)?.toInt() ?: 0
+                    }
+                    logOnce("palette init code=$code")
+                    result
+                }
+                n++
+            }.onFailure { log("hook $className.init: $it") }
+        }
+        log("$className init/6 hooked=$n")
+    }
+
+    // ------------------------------------------------------------ palette colors
+
+    /**
+     * 调色盘面板的 Seekbar 会调 PaletteSeekbarColors.get()，
+     * 而它依赖的 PaletteSeekbarColorTable / ipusdk 类在这台机器上不存在，
+     * 一 inflate 就 NoClassDefFoundError。
+     *
+     * 这里在 get(String) 出口直接返回一个 stub Recipe（或 null），不再进原方法。
+     */
+    private fun hookPaletteColors(cl: ClassLoader) {
+        val classes = listOf(
+            "com.oplus.ocs.camera.ipuapi.process.filter.palette.PaletteColors",
+            "com.oplus.ocs.camera.ipuapi.process.filter.palette.PaletteSeekbarColors"
+        )
+        classes.forEach { className ->
+            val cls = runCatching { cl.loadClass(className) }.getOrNull()
+            if (cls == null) {
+                log("WARN: $className not found")
+                return@forEach
+            }
+            var n = 0
+            var trackers = 0
+            cls.declaredMethods.forEach { m ->
+                if (!Modifier.isStatic(m.modifiers)) return@forEach
+                if (m.parameterTypes.size != 1 || m.parameterTypes[0] != String::class.java) return@forEach
+                if (!m.returnType.name.endsWith("Recipe")) return@forEach
+                runCatching {
+                    hook(m).intercept {
+                        val stub = makeRecipe(m.returnType)
+                        logOnce("stub ${m.returnType.simpleName}.get -> ${if (stub == null) "null" else "recipe"}")
+                        stub
+                    }
+                    n++
+                }.onFailure { log("hook $className.${m.name}: $it") }
+            }
+            log("$className get/Recipe hooked=$n")
+        }
+    }
+
+    /** 造一个最小可用的 Recipe：优先 empty()，其次 int[] 构造。失败返回 null。 */
+    private fun makeRecipe(rt: Class<*>): Any? {
+        val colors = intArrayOf(0xFF3A6EA5.toInt(), 0xFF808080.toInt(), 0xFFE8C48A.toInt())
+        return runCatching {
+            runCatching { rt.getMethod("empty").invoke(null) }.getOrNull()
+                ?: runCatching { rt.getConstructor(IntArray::class.java).newInstance(colors) }.getOrNull()
+        }.getOrNull()
+    }
+
+    // ------------------------------------------------------------ 构图调用观察
+    /** 只读观察：相机自己有没有走 native 构图这条路。 */
+    private fun watchComposition(cl: ClassLoader) {
+        val cls = runCatching {
+            cl.loadClass("com.oplus.camera.aicomposition.OplusAIComposition")
+        }.getOrNull() ?: run { logOnce("watch: OplusAIComposition 不存在"); return }
+
+        val watchNames = setOf(
+            "initTracker", "initializeTracker", "nativeInitComposition",
+            "nativeRunComposition", "nativeRunCompositionStreaming", "nativeRelease"
+        )
+        var n = 0
+        cls.declaredMethods.forEach { m ->
+            if (m.name !in watchNames) return@forEach
+            runCatching {
+                hook(m).intercept { chain ->
+                    runCatching {
+                        val args = chain.args.joinToString(",") { a ->
+                            when (a) {
+                                null -> "null"
+                                is android.hardware.HardwareBuffer -> "HB(${a.width}x${a.height})"
+                                is Long, is Int, is Float -> a.toString()
+                                is Array<*> -> "arr${a.size}"
+                                else -> a.javaClass.simpleName
+                            }
+                        }
+                        logOnce("comp ${m.name}($args)")
+                    }
+                    val r = chain.proceed()
+                    if (m.name.startsWith("nativeRun")) {
+                        logOnce("comp ${m.name} -> ${r?.javaClass?.simpleName ?: "void"}")
+                    }
+                    r
+                }
+                n++
+            }.onFailure { log("watch ${m.name}: $it") }
+        }
+        logOnce("watchComposition hooked=$n")
+    }
+    // ------------------------------------------------------------ 取帧探测
+    /**
+     * 找构图取帧的入口：把相机里跟 HardwareBuffer / AIUnit 沾边的方法签名先打出来，
+     * 只读不动，确认真正的取帧点之后再接桥。
+     */
+    private fun probeFrameApi(cl: ClassLoader) {
+        listOf(
+            "com.oplus.camera.common.utils.HardwareBufferUtils",
+            "com.oplus.ocs.camera.OplusAICompositionHelper",
+            "com.oplus.camera.aicomposition.OplusAIComposition"
+        ).forEach { name ->
+            val cls = runCatching { cl.loadClass(name) }.getOrNull()
+            if (cls == null) {
+                logOnce("probe: $name 不存在")
+                return@forEach
+            }
+            cls.declaredMethods.take(12).forEach { m ->
+                logOnce("probe ${cls.simpleName}#${m.name}(${m.parameterTypes.joinToString { it.simpleName }})")
+            }
+        }
+        // 顺带把自带插件 dex 的框架类摸一下，确认能加载
+        val extra = java.io.File(currentApplication()?.filesDir, "aiunit/feiyu_aiunit_bridge.dex")
+        logOnce("probe aiunit dex: ${if (extra.isFile) "ready ${extra.length()}" else "未部署"}")
+    }
+    // ------------------------------------------------------------ 灵感构图取帧桥
+
+    /**
+     * 灵感构图的"出图"这一段。
+     *
+     * 相机本来只在 feature 打开时才把预览帧送进构图服务；这台机器上 feature 关了，
+     * 于是走不成。这里自己接：
+     *
+     *   取帧类（wb.r / rb.t）的帧方法 → 记一份预览帧
+     *   runCompositionStreaming(HardwareBuffer, Callback) 返回后 → 云端构图 → 回调投递
+     *
+     * 投递走回调的 onEvent(int, String)：1 和 2 两个事件，linggan 那边实测就是这个。
+     */
+    private fun hookComposition(cl: ClassLoader) {
+        val apk = moduleApkPath()
+        AiBridge.attach(cl, apk)
+        log("构图桥: apk=$apk")
+        hookFrameSource(cl)
+
+        var entries = 0
+        COMPOSITION_ENTRIES.forEach { name ->
+            val cls = runCatching { cl.loadClass(name) }.getOrNull()
+            if (cls == null) {
+                log("构图入口缺失: $name")
+                return@forEach
+            }
+            var n = 0
+            var trackers = 0
+            cls.declaredMethods.forEach { m ->
+                if (m.name == "runCompositionStreaming" &&
+                    m.parameterTypes.size == 2 &&
+                    m.parameterTypes[0] == HardwareBuffer::class.java
+                ) {
+                    runCatching {
+                        hook(m).intercept { chain ->
+                            val original = chain.proceed()
+                            val delivered = runCatching { deliver(chain.args) }
+                                .onFailure { log("deliver 异常 $it") }
+                                .getOrDefault(false)
+                            if (delivered) true else original
+                        }
+                        n++
+                    }.onFailure { log("挂流式构图失败: $it") }
+                }
+                if (m.name == "reset" && m.parameterTypes.isEmpty()) {
+                    runCatching {
+                        hook(m).intercept { chain ->
+                            AiBridge.resetDelivery()
+                            trackLogged = false
+                            chain.proceed()
+                        }
+                    }.onFailure { log("挂 reset 失败: $it") }
+                }
+                // 构图跟踪：相机自带 native 跟踪器一直判"画面变化较大，已退出本次构图"，
+                // 这里把"参考构图现在在画面哪儿"换成陀螺仪积分，直接回传。
+                if (m.name == "initializeTracker" && m.parameterTypes.size == 8) {
+                    runCatching {
+                        hook(m).intercept { chain ->
+                            chain.proceed()
+                            runCatching { onTrackerInit(chain.args) }
+                            true
+                        }
+                        trackers++
+                    }.onFailure { log("挂 initializeTracker 失败: $it") }
+                }
+                if (m.name == "track" && m.parameterTypes.size == 5) {
+                    runCatching {
+                        hook(m).intercept { chain ->
+                            chain.proceed()
+                            onTrack(chain.args)
+                        }
+                        trackers++
+                    }.onFailure { log("挂 track 失败: $it") }
+                }
+            }
+            if (n > 0) {
+                entries += n
+                log("已挂 $name 流式构图 x$n")
+            }
+            if (trackers > 0) log("已挂 $name 构图跟踪 x$trackers")
+        }
+        if (entries == 0) log("没有可用的构图入口") else log("灵感构图已接入云端")
+        if (TRACE_COMPOSITION) traceComposition(cl)
+    }
+
+    /**
+     * 临时诊断：把构图入口类的方法调用都记一遍（每个方法第一条），
+     * 用来确认相机在"灵感构图"界面到底走没走这套 API。定位完就把 TRACE_COMPOSITION 关掉。
+     */
+    private fun traceComposition(cl: ClassLoader) {
+        COMPOSITION_ENTRIES.forEach { name ->
+            val cls = runCatching { cl.loadClass(name) }.getOrNull() ?: return@forEach
+            cls.declaredMethods.forEach { m ->
+                runCatching {
+                    hook(m).intercept { chain ->
+                        val args = chain.args.joinToString(",") { a ->
+                            when (a) {
+                                null -> "null"
+                                is HardwareBuffer -> "HB(${a.width}x${a.height})"
+                                is Number, is Boolean -> a.toString()
+                                is Array<*> -> "arr${a.size}"
+                                else -> a.javaClass.simpleName
+                            }
+                        }
+                        logOnce("call ${cls.simpleName}#${m.name}($args)")
+                        chain.proceed()
+                    }
+                }
+            }
+        }
+        logOnce("构图调用跟踪已挂")
+    }
+
+    /** 临时诊断：「灵感推荐」的鉴权/网络方法调用，连带异常一起记。 */
+    private fun traceInspiration(cl: ClassLoader) {
+        INSPIRATION_CLASSES.forEach { name ->
+            val cls = runCatching { cl.loadClass(name) }.getOrNull() ?: run {
+                log("灵感: 类不存在 $name")
+                return@forEach
+            }
+            cls.declaredMethods.forEach { m ->
+                runCatching {
+                    hook(m).intercept { chain ->
+                        try {
+                            if (m.name == "<init>") {
+                                AiBridge.log("灵感 ${cls.simpleName}<init> 参数 " + chain.args.joinToString(" | "))
+                            }
+                            val r = chain.proceed()
+                            AiBridge.logOnce("灵感 ${cls.simpleName}#${m.name} -> " + r)
+                            if (m.name == "getHttpCode") {
+                                val e = runCatching { chain.thisObject }.getOrNull()
+                                val msg = runCatching { (e as Throwable).message }.getOrNull()
+                                val cause = runCatching { (e as Throwable).cause?.toString() }.getOrNull()
+                                AiBridge.log("灵感 异常消息: $msg · cause=$cause")
+                            }
+                            r
+                        } catch (t: Throwable) {
+                            AiBridge.log("灵感 ${cls.simpleName}#${m.name} 抛 ${t::class.java.simpleName}: ${t.message}")
+                            throw t
+                        }
+                    }
+                }.onFailure { log("挂灵感 ${cls.simpleName}#${m.name} 失败: $it") }
+            }
+        }
+        log("灵感链路跟踪已挂")
+    }
+
+    /** 取帧类：预览帧在相机线程上路过这里，顺手记一份。 */
+    private fun hookFrameSource(cl: ClassLoader) {
+        val cls = FRAME_CLASSES.firstNotNullOfOrNull { name ->
+            runCatching { Class.forName(name, false, cl) }.getOrNull()
+        }
+        if (cls == null) {
+            log("取帧类未命中: $FRAME_CLASSES")
+            return
+        }
+        log("取帧类命中: ${cls.name}")
+        var n = 0
+        cls.declaredMethods.forEach { m ->
+            if (n > 0) return@forEach
+            if (m.name != "f" || m.parameterCount != 11) return@forEach
+            runCatching {
+                hook(m).intercept { chain ->
+                    runCatching {
+                        val picked = AiBridge.pickFrame(chain.args)
+                        AiBridge.logOnce("取帧 " + AiBridge.describeFrames(chain.args) + " -> " + AiBridge.describe(picked))
+                        AiBridge.keepFrame(picked)
+                    }
+                    chain.proceed()
+                }
+                n++
+            }.onFailure { log("取帧方法挂钩失败: $it") }
+        }
+        log("取帧方法 hooked=$n")
+    }
+
+    /**
+     * 构图跟踪初始化：起陀螺仪，并把这一帧当作原点（`anchor`）。
+     * 返回 true 告诉相机"跟踪可用"，别走 native 那套判"画面变化较大"的逻辑。
+     */
+    private fun onTrackerInit(args: List<Any?>) {
+        val app = currentApplication() ?: return
+        GyroTracker.start(app)
+        val hb = args.getOrNull(0) as? HardwareBuffer
+        val w = hb?.width?.toFloat() ?: 768f
+        val h = hb?.height?.toFloat() ?: 1024f
+        GyroTracker.anchor(w, h)
+    }
+
+    /**
+     * 每帧回传：参考构图的中心点 + 陀螺仪偏移，格式 {cx, cy, 0, 3}。
+     * 相机拿这个值画引导点/判断"对准了没有"。
+     */
+    private fun onTrack(args: List<Any?>): FloatArray {
+        val hb = args.getOrNull(0) as? HardwareBuffer
+        val w = hb?.width?.toFloat() ?: 768f
+        val h = hb?.height?.toFloat() ?: 1024f
+        val off = GyroTracker.offsetPixels()
+        val cx = 384f * w / 768f + off[0]
+        val cy = 512f * h / 1024f + off[1]
+        synchronized(logged) {
+            if (!trackLogged) {
+                trackLogged = true
+                log("跟踪回传 (${cx.toInt()},${cy.toInt()})")
+            }
+        }
+        return floatArrayOf(cx, cy, 0f, 3f)
+    }
+
+    /** 云端构图结果 → 相机的推荐列表。返回 true 表示这一次已经由我们投递。 */
+    private fun deliver(args: List<Any?>?): Boolean {
+        if (args == null || args.size < 2) return false
+        if (args[0] !is HardwareBuffer) return false
+        val callback = args[1] ?: return false
+        if (AiBridge.isDelivered()) return false
+
+        // 用取帧类抓到的那份：它是 RGBA_8888，能直接转 Bitmap。
+        // 构图调用自己带的帧常是 RGB_888 / 私有格式，转不出画面。
+        AiBridge.logOnce("构图帧(参数) " + AiBridge.describe(AiBridge.pickFrame(args)))
+        val frame = AiBridge.takeFrame() ?: AiBridge.pickFrame(args) ?: run {
+            logOnce("deliver: 没有可用帧")
+            return false
+        }
+        val w = runCatching { frame.width }.getOrDefault(0)
+        val h = runCatching { frame.height }.getOrDefault(0)
+        if (w <= 0 || h <= 0) {
+            logOnce("deliver: 帧已释放")
+            return false
+        }
+        val app = currentApplication() ?: run {
+            logOnce("deliver: 拿不到 application")
+            return false
+        }
+        val cloud = AiBridge.compose(app, frame, 1.0f) ?: run {
+            logOnce("deliver: 云端无结果")
+            return false
+        }
+        AiBridge.logOnce("云端已回，开始翻译 (${w}x${h})")
+        val cameraJson = AiBridge.toCameraJson(cloud, w, h) ?: run {
+            logOnce("deliver: 翻译失败 $cloud")
+            return false
+        }
+        AiBridge.logOnce("翻译完成，投递");
+
+        AiBridge.logOnce("回调类型 ${callback.javaClass.name}")
+        val ok = runCatching {
+            val onEvent = findOnEvent(callback.javaClass) ?: run {
+                AiBridge.logOnce(
+                    "回调没有 onEvent: ${callback.javaClass.name} -> " +
+                        callback.javaClass.methods.joinToString("; ") {
+                            "${it.name}(${it.parameterTypes.joinToString { p -> p.simpleName }})"
+                        }
+                )
+                return@runCatching false
+            }
+            AiBridge.logOnce("找到 ${onEvent.name}(${onEvent.parameterTypes.joinToString { it.simpleName }})，投 1")
+            onEvent.invoke(callback, 1, cameraJson)
+            AiBridge.logOnce("投 2")
+            onEvent.invoke(callback, 2, cameraJson)
+            AiBridge.logOnce("投 2 完成")
+            true
+        }.getOrElse {
+            logOnce("回调失败 $it")
+            false
+        }
+        if (ok) {
+            AiBridge.markDelivered()
+            logOnce("已送入推荐 $cameraJson")
+        }
+        return ok
+    }
+
+    /** 回调的 onEvent(int, String)。接口声明的也算，所以沿类/接口都翻一遍。 */
+    private fun findOnEvent(cls: Class<*>): java.lang.reflect.Method? {
+        val queue = ArrayDeque<Class<*>>()
+        val seen = HashSet<Class<*>>()
+        queue.add(cls)
+        while (queue.isNotEmpty()) {
+            val c = queue.removeFirst()
+            if (!seen.add(c)) continue
+            c.methods.forEach { m ->
+                if (m.name == "onEvent" &&
+                    m.parameterTypes.size == 2 &&
+                    m.parameterTypes[0] == Int::class.javaPrimitiveType &&
+                    m.parameterTypes[1] == String::class.java
+                ) return m
+            }
+            c.interfaces.forEach { queue.add(it) }
+            c.superclass?.let { queue.add(it) }
+        }
+        return null
+    }
+
+    private fun moduleApkPath(): String? = runCatching { getModuleApplicationInfo().sourceDir }.getOrNull()
+
+    // ------------------------------------------------------------ deploy
+
+    private fun ensureDeployed(): Boolean {
+        if (deployed) return true
+        synchronized(lock) {
+            if (deployed) return true
+            val app = currentApplication()
+            if (app == null) {
+                log("WARN: currentApplication null, cannot deploy")
+                return false
+            }
+            return runCatching {
+                val base = File(app.filesDir, "campalette/basictone")
+                val setting = File(base, "setting")
+                val palette = File(base, "palette")
+                val odt = File(base, "odt")
+                val stamp = File(base, ".extract")
+
+                val cached = stamp.isFile && runCatching { stamp.readText().trim() }.getOrNull() == EXTRACT
+                if (cached && File(palette, "HDR/SC16Lut8").length() == LUT_SIZE) {
+                    return activate(base, setting, palette, odt, "cached")
+                }
+
+                base.deleteRecursively()
+                listOf(setting, odt).forEach { it.mkdirs() }
+
+                // 1) 提取包里的配置文件（setting/*.ini、palette/HDR|SDR/SC16Lut0..8）原样铺开
+                val info = getModuleApplicationInfo()
+                var extracted = 0
+                ZipFile(info.sourceDir).use { zip ->
+                    zip.entries().toList()
+                        .filter { !it.isDirectory && it.name.startsWith(ASSET_ROOT) }
+                        .forEach { entry ->
+                            val dst = File(base, entry.name.substring(ASSET_ROOT.length))
+                            dst.parentFile?.mkdirs()
+                            zip.getInputStream(entry).use { input ->
+                                dst.outputStream().use { output -> input.copyTo(output) }
+                            }
+                            extracted++
+                        }
+                }
+
+                // 2) ODT 是 12 MB 的二进制，机器上已经有同一份，直接拷现成的
+                copyDir(File("$ODM/odt"), odt)
+                val pre = File(odt, "ODT_Pre")
+                val photo = File(odt, "ODT_Photo")
+                if (!pre.isFile && photo.isFile) photo.copyTo(pre, overwrite = true)
+
+                val hdr = File(palette, "HDR/SC16Lut8")
+                val sdr = File(palette, "SDR/SC16Lut8")
+                if (hdr.length() != LUT_SIZE || sdr.length() != LUT_SIZE) {
+                    log("deploy aborted: HDR=${hdr.length()} SDR=${sdr.length()} files=$extracted")
+                    return false
+                }
+
+                stamp.writeText(EXTRACT)
+                activate(base, setting, palette, odt, "extracted=$extracted")
+            }.getOrElse {
+                log("deploy failed: $it")
+                false
+            }
+        }
+    }
+
+    private fun activate(
+        base: File,
+        setting: File,
+        palette: File,
+        odt: File,
+        how: String
+    ): Boolean {
+        settingPath = setting.absolutePath
+        palettePath = palette.absolutePath
+        odtPath = odt.absolutePath
+        deployed = true
+        val files = base.walkTopDown().count { it.isFile }
+        log("deployed ($how) -> ${base.absolutePath} files=$files")
+        return true
+    }
+
+    private fun copyDir(src: File, dst: File) {
+        val files = src.listFiles() ?: return
+        files.forEach { f ->
+            if (f.isFile) {
+                runCatching { f.copyTo(File(dst, f.name), overwrite = true) }
+            }
+        }
+    }
+
+    private fun currentApplication(): Application? = runCatching {
+        val at = Class.forName("android.app.ActivityThread")
+        val thread = at.getMethod("currentActivityThread").invoke(null)
+        at.getMethod("currentApplication").invoke(thread) as? Application
+    }.getOrNull()
+
+    private fun logOnce(msg: String) {
+        synchronized(logged) {
+            if (logged.size < 200 && logged.add(msg)) log(msg)
+        }
+    }
+
+    private fun log(msg: String) = log(Log.INFO, TAG, msg)
+}
