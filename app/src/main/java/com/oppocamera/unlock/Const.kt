@@ -9,5 +9,5 @@ object Const {
 
     /** 致谢里用到的两个上游。 */
     const val LIBXPOSED = "https://github.com/libxposed/api"
-    const val PUI = "https://github.com/LucasBlackLu/PUIInstaller"
+    const val PUI = "https://github.com/sakurakingfifth-debug/PUIInstaller"
 }

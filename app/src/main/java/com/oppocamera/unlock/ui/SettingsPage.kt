@@ -91,15 +91,8 @@ fun SettingsPage(connected: Boolean, scoped: Boolean, root: Boolean) {
                     title = "GitHub",
                     subtitle = "喜欢我的工作就点个 Star",
                     showChevron = true,
-                    onClick = { Shell.openUrl(ctx, Const.GITHUB) }
-                )
-                PuiListRow(
-                    icon = PuiIcon.Heart,
-                    title = "酷安",
-                    subtitle = "顺手点个关注，是我更新的最大动力",
-                    showChevron = true,
                     showDivider = false,
-                    onClick = { Shell.openUrl(ctx, Const.COOLAPK) }
+                    onClick = { Shell.openUrl(ctx, Const.GITHUB) }
                 )
             }
         }
@@ -128,8 +121,15 @@ fun SettingsPage(connected: Boolean, scoped: Boolean, root: Boolean) {
                 PuiListRow(
                     icon = PuiIcon.Info,
                     title = "灵感构图",
-                    subtitle = "取帧 + 云端接力的思路参考 com.linggan.goutu",
-                    showDivider = false
+                    subtitle = "取帧 + 云端接力的思路参考 com.linggan.goutu"
+                )
+                PuiListRow(
+                    icon = PuiIcon.Heart,
+                    title = "酷安",
+                    subtitle = "coolapk.com/u/26800889",
+                    showChevron = true,
+                    showDivider = false,
+                    onClick = { Shell.openUrl(ctx, Const.COOLAPK) }
                 )
             }
         }
