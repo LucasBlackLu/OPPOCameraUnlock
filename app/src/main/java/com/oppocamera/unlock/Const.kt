@@ -13,7 +13,6 @@ object Const {
     const val PUI = "https://github.com/sakurakingfifth-debug/PUIInstaller"
     const val PUI_AUTHOR_COOLAPK = "https://www.coolapk.com/u/540690"
 
-    /** 灵感构图参考 com.linggan.goutu：作者 KaMuaMua2020（酷安 26800889）。 */
-    const val LINGGAN_AUTHOR = "https://github.com/KaMuaMua2020"
+    /** 灵感构图参考 com.linggan.goutu：作者 KaMuaMua2020，只有酷安，没有 GitHub。 */
     const val LINGGAN_AUTHOR_COOLAPK = "https://www.coolapk.com/u/26800889"
 }

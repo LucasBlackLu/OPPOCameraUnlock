@@ -128,14 +128,7 @@ fun SettingsPage(connected: Boolean, scoped: Boolean, root: Boolean) {
                 PuiListRow(
                     icon = PuiIcon.Info,
                     title = "灵感构图",
-                    subtitle = "com.linggan.goutu · 作者 KaMuaMua2020",
-                    showChevron = true,
-                    onClick = { Shell.openUrl(ctx, Const.LINGGAN_AUTHOR) }
-                )
-                PuiListRow(
-                    icon = PuiIcon.User,
-                    title = "KaMuaMua2020",
-                    subtitle = "灵感构图作者 · coolapk.com/u/26800889",
+                    subtitle = "com.linggan.goutu · 作者 KaMuaMua2020 · 酷安 26800889",
                     showChevron = true,
                     showDivider = false,
                     onClick = { Shell.openUrl(ctx, Const.LINGGAN_AUTHOR_COOLAPK) }
