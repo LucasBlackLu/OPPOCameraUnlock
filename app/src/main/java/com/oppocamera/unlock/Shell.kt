@@ -17,10 +17,10 @@ object Shell {
     var rootGranted: Boolean? = null
         private set
 
-    fun run(cmd: String): Result = runCatching {
+    fun run(cmd: String, timeoutSec: Long = 15): Result = runCatching {
         val p = ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
         val out = p.inputStream.bufferedReader().use { it.readText() }.trim()
-        if (!p.waitFor(15, TimeUnit.SECONDS)) {
+        if (!p.waitFor(timeoutSec, TimeUnit.SECONDS)) {
             p.destroy()
             return Result(false, "su 超时")
         }

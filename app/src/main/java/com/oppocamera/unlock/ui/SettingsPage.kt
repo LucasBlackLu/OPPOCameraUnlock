@@ -6,6 +6,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -16,7 +21,9 @@ import com.oppocamera.unlock.pui.PuiIcon
 import com.oppocamera.unlock.pui.PuiListRow
 import com.oppocamera.unlock.pui.PuiPageTitle
 import com.oppocamera.unlock.pui.PuiSectionHeader
+import com.oppocamera.unlock.pui.PuiSwitchRow
 import com.oppocamera.unlock.pui.rememberStatusBarHeight
+import kotlin.concurrent.thread
 
 /** 设置页：快捷入口 + 说明。 */
 @Composable
@@ -46,35 +53,6 @@ fun SettingsPage(connected: Boolean, scoped: Boolean, root: Boolean) {
                     showChevron = true,
                     showDivider = false,
                     onClick = { Shell.openLsposed(ctx) }
-                )
-            }
-        }
-
-        item {
-            Spacer(Modifier.height(22.dp))
-            PuiSectionHeader("运行状态")
-        }
-
-        item {
-            PuiGroup(null) {
-                PuiListRow(
-                    icon = PuiIcon.Check,
-                    title = "模块",
-                    subtitle = if (connected) "LSPosed 服务已连接" else "未连接",
-                    trailingText = if (connected) "已启用" else "未启用"
-                )
-                PuiListRow(
-                    icon = PuiIcon.Lock,
-                    title = "作用域",
-                    subtitle = "com.oplus.camera",
-                    trailingText = if (scoped) "已勾选" else "缺失"
-                )
-                PuiListRow(
-                    icon = PuiIcon.Lock,
-                    title = "Root 权限",
-                    subtitle = if (root) "已授权，可一键重启" else "未授权，手动强制停止即可",
-                    trailingText = if (root) "已授权" else "未授权",
-                    showDivider = false
                 )
             }
         }
@@ -114,25 +92,53 @@ fun SettingsPage(connected: Boolean, scoped: Boolean, root: Boolean) {
                 PuiListRow(
                     icon = PuiIcon.Palette,
                     title = "PUI 设计系统",
-                    subtitle = "界面骨架 · 作者 天伞桜",
-                    showChevron = true,
-                    onClick = { Shell.openUrl(ctx, Const.PUI) }
-                )
-                PuiListRow(
-                    icon = PuiIcon.Heart,
-                    title = "天伞桜",
-                    subtitle = "PUI 作者 · coolapk.com/u/540690",
-                    showChevron = true,
-                    onClick = { Shell.openUrl(ctx, Const.PUI_AUTHOR_COOLAPK) }
-                )
-                PuiListRow(
-                    icon = PuiIcon.Info,
-                    title = "灵感构图",
-                    subtitle = "com.linggan.goutu · 作者 KaMuaMua2020 · 酷安 26800889",
+                    subtitle = "界面骨架",
                     showChevron = true,
                     showDivider = false,
-                    onClick = { Shell.openUrl(ctx, Const.LINGGAN_AUTHOR_COOLAPK) }
+                    onClick = { Shell.openUrl(ctx, Const.PUI) }
                 )
+            }
+        }
+
+        item {
+            Spacer(Modifier.height(22.dp))
+            PuiSectionHeader("滤镜开关")
+        }
+
+        item {
+            // 用系统属性控制（模块在相机进程里读 persist.camunlock.filter.*）
+            // 鲜活：vibe.rgba.bin / 节日：festival.rgba.bin / 庆典：ceremony.rgba.bin
+            val switches = listOf(
+                Triple("lively", "鲜活", "vibe.rgba.bin"),
+                Triple("festival", "节日", "festival.rgba.bin"),
+                Triple("ceremony", "庆典", "ceremony.rgba.bin")
+            )
+            var state by remember { mutableStateOf(switches.associate { it.first to false }) }
+            LaunchedEffect(Unit) {
+                thread {
+                    state = switches.associate { (key, _, _) ->
+                        key to (Shell.run("getprop persist.camunlock.filter.$key").out.trim() == "1")
+                    }
+                }
+            }
+            PuiGroup(null) {
+                switches.forEachIndexed { i, (key, name, lut) ->
+                    PuiSwitchRow(
+                        icon = PuiIcon.Palette,
+                        title = name,
+                        subtitle = if (state[key] == true) "已开启 · $lut" else "默认关（$lut 未随固件提供）",
+                        checked = state[key] == true,
+                        enabled = root,
+                        showDivider = i != switches.lastIndex,
+                        onChange = { on ->
+                            thread {
+                                Shell.run("setprop persist.camunlock.filter.$key ${if (on) 1 else 0}")
+                                state = state + (key to on)
+                                Shell.restartCamera()
+                            }
+                        }
+                    )
+                }
             }
         }
 

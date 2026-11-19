@@ -37,12 +37,78 @@ class CameraPaletteModule : XposedModule() {
         private const val LUT_SIZE = 49152L
         private const val ODM = "/odm/etc/camera/basictone"
 
-        /** 提取包版本：assets/basictone 是从 X10 Pro Max 的 /odm/etc/camera/basictone 提取的。 */
-        private const val EXTRACT = "x10-1.1.0"
+        /**
+         * 提取包版本：assets/basictone 的 palette/ 换成了 Reno 17 Pro 的
+         * /odm/etc/camera/basictone/palette（18 个 SC16，其中 8 个与 X10 那版不同）。
+         * 改这个字符串会让相机侧的缓存整包重铺。
+         */
+        private const val EXTRACT = "reno17p-1.0.0"
         private const val ASSET_ROOT = "assets/basictone/"
 
         /** 调色盘 */
         private const val KEY_PALETTE = "com.oplus.feature.color.palette.support"
+
+        /** unit.sdk 里管滤镜分组表的类（琥珀/清透就在这里被判定） */
+        private const val FILTER_GROUPS =
+            "com.oplus.ocs.camera.ipusdk.processunit.filter.list.FilterGroupManager"
+
+        /** 滤镜组对象（addFrontAndBack 在这里，用来卡 鲜活/节日/庆典） */
+        private const val FILTER_GROUP =
+            "com.oplus.ocs.camera.ipusdk.processunit.filter.list.FilterGroup"
+
+        /** 调色盘额外滤镜的开关 key（FilterGroupManager 里逐个滤镜组用它们判定） */
+        private val FILTER_KEYS = listOf(
+            "com.oplus.feature.qingtou.hupo.filter.support",          // 琥珀 / 清透
+            "com.oplus.filter.travel.photo.support",                   // 旅拍
+            "com.oplus.tol.style.filter.support",                      // TOL 风格
+            "com.oplus.feature.800t.filter.support",                   // 800T
+            "com.oplus.feature.800t.filter.portrait.support",
+            "com.oplus.feature.fewer.users.filter.support",            // 小众
+            "com.oplus.feature.flash.filter.support",                  // 闪光
+            "com.oplus.feature.flash.filter.portrait.support",
+            "com.oplus.feature.flash.warm.filter.support",
+            "com.oplus.feature.portra.filter.support",                 // 人像滤镜
+            "com.oplus.feature.tx400.filter.support",                  // TX400
+            "com.oplus.feature.os15.new.filter.support",               // OS15 新滤镜
+            "com.oplus.feature.blackandwhite.portra.positive.filter.update.support",
+            "com.oplus.support.grand.tour.filter",                     // 哈苏大师
+            "com.oplus.street.grand.tour.filter.type.support",
+            "com.oplus.feature.soft.light.filter.support",             // 柔光
+            "com.oplus.capture.sdr.all.route"
+        )
+
+        /**
+         * FilterGroupManager 里的静态布尔门控字段。只放「xxxSupport」这一类，
+         * 不碰 sbIsExport / sbIsBrandOplusR / sGotFilter / sbCaptureSdrAllRoute
+         * —— 那些是运行状态，强改会走进别的分支。
+         */
+        private val FILTER_FLAG_FIELDS = listOf(
+            "sbBlackandwhitePortraPositiveFilterSupport",
+            "sbIsSupportTravelPhotoFilter",
+            "sbIsSupportTolFilter"
+        )
+
+        /** 带开关的标志字段：字段名 → 开关名（开关关着就不设 true） */
+        private val FILTER_FLAG_SWITCH = mapOf(
+            "sbIsSupportFestivalFilter" to "festival",
+            "sbIsSupportLivelyFilter" to "lively"
+        )
+
+        /** 导演联名滤镜（姜文 / 贾樟柯）——按需求不放行，别加回 KEY/FIELD 里 */
+        private val FILTER_SKIP = listOf("Director", "DirectorRUS", "Jzk", "jzk", "Jiangwen", "jangwen")
+
+        /**
+         * 用系统属性做的开关（默认关）：persist.camunlock.filter.<name> = 1
+         *   lively   → 鲜活（vibe.rgba.bin）
+         *   festival → 节日（festival.rgba.bin）
+         *   ceremony → 庆典（ceremony.rgba.bin）
+         * 这三支的 LUT 在本机和 Reno 固件里都不存在，先按开关控制。
+         */
+        private val SWITCH_LUT = mapOf(
+            "lively" to "vibe.rgba.bin",
+            "festival" to "festival.rgba.bin",
+            "ceremony" to "ceremony.rgba.bin"
+        )
 
         /** 灵感构图（AI 构图）相关的几个 key，名字在不同版本里不一样，全给。 */
         private val AI_KEYS = listOf(
@@ -55,7 +121,22 @@ class CameraPaletteModule : XposedModule() {
             "aicomposition"
         )
 
-        private val FORCED = AI_KEYS + KEY_PALETTE
+        /**
+         * 复古相机（= POP 模式）与鱼眼相关 key。
+         * 7.016 装上来之后这些代码都齐了，缺的只是机型的项目配置。
+         * 鱼眼是 retro 里的一个开关：filter.fisheye.enable / fisheye.enable。
+         */
+        private val RETRO_KEYS = listOf(
+            "com.oplus.feature.retro.camera.support",
+            "com.oplus.feature.retro.camera.livephoto.default.open",
+            "com.oplus.camera.feature.retro_camera",
+            "com.oplus.camera.retro.filter.fisheye.enable",
+            "com.oplus.camera.retro.fisheye.enable",
+            "com.oplus.camera.retro.filter.soft.enable",
+            "com.oplus.retro.camera.max.zoom.value"
+        )
+
+        private val FORCED = AI_KEYS + KEY_PALETTE + RETRO_KEYS
 
         /**
          * 补进特性表的只有一个：相机里 feature 名的命名空间是 com.oplus.camera.feature.*，
@@ -82,12 +163,16 @@ class CameraPaletteModule : XposedModule() {
             "com.oplus.camera.aicomposition.OplusAIComposition"
         )
 
-        /** 预览取帧类的混淆名（dex 里就这么短）。 */
-        private val FRAME_CLASSES = listOf("wb.r", "rb.t")
+        /**
+         * 预览取帧类的混淆名（dex 里就这么短）。
+         * 7.006.121 是 wb.r / rb.t；7.016.29 换成 tb.q（方法 f 仍是 11 个参数、带 3 个 HardwareBuffer）。
+         */
+        private val FRAME_CLASSES = listOf("tb.q", "wb.r", "rb.t")
     }
 
     private val lock = Any()
     private val logged = HashSet<String>()
+    private val switchCache = HashMap<String, Boolean>()
     @Volatile private var adapterLogged = false
     @Volatile private var trackLogged = false
 
@@ -105,6 +190,7 @@ class CameraPaletteModule : XposedModule() {
         runCatching { hookInit(cl, COMBINE) }.onFailure { log("hookInit: $it") }
         runCatching { hookInit(cl, COMBINE_SDK) }.onFailure { log("hookInitSdk: $it") }
         runCatching { hookPaletteColors(cl) }.onFailure { log("hookPaletteColors: $it") }
+        runCatching { hookFilterGroups(cl) }.onFailure { log("hookFilterGroups: $it") }
         runCatching { hookComposition(cl) }.onFailure { log("hookComposition: $it") }
         if (TRACE_INSPIRATION) runCatching { traceInspiration(cl) }.onFailure { log("traceInspiration: $it") }
 
@@ -257,6 +343,152 @@ class CameraPaletteModule : XposedModule() {
         log("$className init/6 hooked=$n")
     }
 
+    // ------------------------------------------------------------ filter groups
+
+    /**
+     * 调色盘的滤镜组门控。
+     *
+     * unit.sdk 的 FilterGroupManager 用三层判定决定每组放哪些滤镜：
+     *   1. 静态字段 sbXxxSupport（clinit 里按项目配置赋值）→ 反射改字段
+     *   2. isXxx() 静态判定（isSupportQingtouHupoFilter 等）→ hook 成 true
+     *   3. getConfigBooleanValue(key) → key 加进 FILTER_KEYS 强制 true
+     *
+     * 琥珀/清透的实现（dex 反编译）：
+     *   isSupportQingtouHupoFilter() = getConfigBooleanValue("com.oplus.feature.qingtou.hupo.filter.support")
+     *   initPaletteExtraFilterGroup(group) { if (...) { add("qing_tou.bin"); add("hu_po.bin") } }
+     */
+    private fun hookFilterGroups(cl: ClassLoader) {
+        val cls = runCatching { cl.loadClass(FILTER_GROUPS) }.getOrNull()
+        if (cls == null) {
+            log("WARN: $FILTER_GROUPS not found")
+            return
+        }
+
+        // 1) 所有 isXxx() 静态判定放行；导演联名（姜文/贾樟柯）跳过
+        runCatching {
+            var n = 0
+            cls.declaredMethods.forEach { m ->
+                if (!Modifier.isStatic(m.modifiers)) return@forEach
+                if (m.parameterTypes.isNotEmpty()) return@forEach
+                if (m.returnType != Boolean::class.javaPrimitiveType) return@forEach
+                if (!m.name.startsWith("is")) return@forEach
+                if (FILTER_SKIP.any { m.name.contains(it, ignoreCase = true) }) return@forEach
+                if (m.name.contains("Festival", true) && !switchOn("festival")) return@forEach
+                if (m.name.contains("Lively", true) && !switchOn("lively")) return@forEach
+                hook(m).intercept {
+                    logOnce(m.name + "() -> true")
+                    true
+                }
+                n++
+            }
+            log("FilterGroupManager is*() hooked=$n")
+        }.onFailure { log("hook is*(): $it") }
+
+        // 2) 进任何 init*FilterGroup 之前把 sbXxxSupport 补成 true，并顺便打一组数量
+        runCatching {
+            var n = 0
+            cls.declaredMethods.forEach { m ->
+                if (!Modifier.isStatic(m.modifiers)) return@forEach
+                if (!m.name.startsWith("init") || !m.name.endsWith("FilterGroup")) return@forEach
+                hook(m).intercept { chain ->
+                    forceFilterFlags(cls)
+                    val r = chain.proceed()
+                    runCatching {
+                        val arg = chain.args.firstOrNull()
+                        if (arg != null) logOnce(m.name + " -> " + describeGroup(arg))
+                    }
+                    r
+                }
+                n++
+            }
+            log("init*FilterGroup hooked=$n")
+        }.onFailure { log("hook init*FilterGroup: $it") }
+
+        // 3) 兜底：内部走 getConfigBooleanValue(key) 的一律放行
+        runCatching {
+            var n = 0
+            cls.declaredMethods.forEach { m ->
+                if (m.name != "getConfigBooleanValue" || m.parameterTypes.size != 1) return@forEach
+                if (m.parameterTypes[0] != String::class.java) return@forEach
+                hook(m).intercept { chain ->
+                    val k = chain.getArg(0) as? String
+                    if (k != null && k in FILTER_KEYS) {
+                        logOnce("force $k -> true")
+                        true
+                    } else chain.proceed()
+                }
+                n++
+            }
+            log("FilterGroupManager.getConfigBooleanValue hooked=$n")
+        }.onFailure { log("hook FilterGroupManager.getConfigBooleanValue: $it") }
+
+        // 4) 鲜活/节日/庆典：initFilterGroup 里是无条件 addFrontAndBack 的，用户要求开关控制
+        runCatching {
+            val fg = cl.loadClass(FILTER_GROUP)
+            var n = 0
+            fg.declaredMethods.forEach { m ->
+                if (m.name != "addFrontAndBack" || m.parameterTypes.size != 2) return@forEach
+                hook(m).intercept { chain ->
+                    val lut = chain.args.firstOrNull {
+                        it is String && SWITCH_LUT.containsValue(it)
+                    } as? String
+                    val sw = lut?.let { l -> SWITCH_LUT.entries.firstOrNull { it.value == l }?.key }
+                    if (sw != null && !switchOn(sw)) {
+                        logOnce("skip " + lut + "（" + sw + " 开关关着）")
+                        null
+                    } else chain.proceed()
+                }
+                n++
+            }
+            log("FilterGroup.addFrontAndBack hooked=$n")
+        }.onFailure { log("hook addFrontAndBack: $it") }
+    }
+
+    /** 把 FILTER_FLAG_FIELDS 里的静态布尔字段设为 true（幂等，失败不抛） */
+    private fun forceFilterFlags(cls: Class<*>) {
+        FILTER_FLAG_FIELDS.forEach { name -> setFlag(cls, name) }
+        FILTER_FLAG_SWITCH.forEach { (field, sw) -> if (switchOn(sw)) setFlag(cls, field) }
+    }
+
+    private fun setFlag(cls: Class<*>, name: String) {
+        runCatching {
+            val f = cls.getDeclaredField(name)
+            f.isAccessible = true
+            if (!f.getBoolean(null)) {
+                f.setBoolean(null, true)
+                logOnce("flag $name -> true")
+            }
+        }
+    }
+
+    /** 读开关：persist.camunlock.filter.<name>，默认 false */
+    private fun switchOn(name: String): Boolean = synchronized(switchCache) {
+        switchCache.getOrPut(name) {
+            runCatching {
+                val c = Class.forName("android.os.SystemProperties")
+                val m = c.getMethod("getBoolean", String::class.java, java.lang.Boolean.TYPE)
+                m.invoke(null, "persist.camunlock.filter." + name, false) as Boolean
+            }.getOrDefault(false).also { logOnce("switch $name = $it") }
+        }
+    }
+
+    /** 诊断用：把一个 FilterGroup 里列表的长度描述出来 */
+    private fun describeGroup(group: Any): String {
+        var c: Class<*>? = group.javaClass
+        while (c != null && c != Any::class.java) {
+            for (f in c.declaredFields) {
+                if (!List::class.java.isAssignableFrom(f.type)) continue
+                runCatching {
+                    f.isAccessible = true
+                    val v = f.get(group) as? List<*>
+                    if (v != null) return "size=" + v.size
+                }
+            }
+            c = c.superclass
+        }
+        return "size=?"
+    }
+
     // ------------------------------------------------------------ palette colors
 
     /**
@@ -267,6 +499,15 @@ class CameraPaletteModule : XposedModule() {
      * 这里在 get(String) 出口直接返回一个 stub Recipe（或 null），不再进原方法。
      */
     private fun hookPaletteColors(cl: ClassLoader) {
+        // 换过 Reno17p 的 unit.sdk 之后真实取色表类都在了（注意包名是 ipusdk 不是 ipuapi），
+        // 有依赖就不打桩，让真实现算颜色；否则格子会被 Recipe.empty() 画成全黑。
+        val dep = runCatching {
+            cl.loadClass("com.oplus.ocs.camera.ipusdk.processunit.filter.palette.PaletteSeekbarColorTable")
+        }.getOrNull()
+        if (dep != null) {
+            log("palette colors: PaletteSeekbarColorTable 存在，跳过打桩（用真实现）")
+            return
+        }
         val classes = listOf(
             "com.oplus.ocs.camera.ipuapi.process.filter.palette.PaletteColors",
             "com.oplus.ocs.camera.ipuapi.process.filter.palette.PaletteSeekbarColors"
