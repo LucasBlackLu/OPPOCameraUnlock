@@ -183,10 +183,13 @@ class CameraPaletteModule : XposedModule() {
         )
 
         /**
-         * 预览取帧类的混淆名（dex 里就这么短）。
-         * 7.006.121 是 wb.r / rb.t；7.016.29 换成 tb.q（方法 f 仍是 11 个参数、带 3 个 HardwareBuffer）。
+         * 预览取帧类的混淆名（dex 里就这么短）。版本对照：
+         *   7.006.121 → wb.r / rb.t（方法 f，11 参）
+         *   7.016.29  → tb.q（方法 f，11 参）
+         *   7.013.60  → tb.u / tb.d（同样 11 参，含 2~3 个 HardwareBuffer）
+         * 所以不认方法名，只认「11 个参数 + 至少 2 个 HardwareBuffer」。
          */
-        private val FRAME_CLASSES = listOf("tb.q", "wb.r", "rb.t")
+        private val FRAME_CLASSES = listOf("tb.u", "tb.q", "tb.d", "wb.r", "rb.t")
     }
 
     private val lock = Any()
@@ -908,9 +911,12 @@ class CameraPaletteModule : XposedModule() {
         }
         log("取帧类命中: ${cls.name}")
         var n = 0
+        // 7.006/7.016 的帧方法是 f(11 参)；7.013 把同样的 11 参挪到了构造里（run() 执行）。
+        // 两种都试：方法名不限，只要「11 个参数、其中至少 2 个 HardwareBuffer」。
         cls.declaredMethods.forEach { m ->
             if (n > 0) return@forEach
-            if (m.name != "f" || m.parameterCount != 11) return@forEach
+            if (m.parameterCount != 11) return@forEach
+            if (m.parameterTypes.count { it == HardwareBuffer::class.java } < 2) return@forEach
             runCatching {
                 hook(m).intercept { chain ->
                     runCatching {
@@ -921,6 +927,7 @@ class CameraPaletteModule : XposedModule() {
                     chain.proceed()
                 }
                 n++
+                log("取帧方法命中: ${m.name}")
             }.onFailure { log("取帧方法挂钩失败: $it") }
         }
         log("取帧方法 hooked=$n")
