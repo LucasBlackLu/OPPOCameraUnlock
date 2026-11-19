@@ -277,4 +277,3 @@ CI（`.github/workflows/build.yml`）：
 
 - [libxposed API](https://github.com/libxposed/api) —— 模块框架
 - PUI 设计系统：作者 **天伞桜**（[GitHub](https://github.com/sakurakingfifth-debug/PUIInstaller) · [酷安](https://www.coolapk.com/u/540690)）—— 界面骨架
-- `com.linggan.goutu`（AI 构图）：作者 **KaMuaMua2020**（[酷安](https://www.coolapk.com/u/26800889)）—— 灵感构图的取帧 + 云端接力思路是从它身上逆出来的，本仓库按同样的路子重写成了自己的一套
