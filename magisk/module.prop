@@ -1,0 +1,6 @@
+id=oppo_camera_port
+name=OPPO 相机调色盘 / 胶片 / POP 移植（Reno 17 Pro 资源）
+version=v1.1.0
+versionCode=11000
+author=LucasBlackLu
+description=把 Reno 17 Pro 的相机资源补到 OPPO X9（PLJ110）：相机 7.013.60 整包、meishe_lut 135 支胶片 LUT、retro/POP 配置、retro 胶囊 UI、unit.sdk 滤镜表（琥珀/清透）、带 Custom LUT 参数的 libmsnativefilter。仅在 X9 上测试可用，其他机型未验证。重启用 stop; start，不要整机重启（会掉 root）。
