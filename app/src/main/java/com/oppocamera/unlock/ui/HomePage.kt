@@ -133,7 +133,7 @@ fun HomePage(
                 PuiListRow(
                     icon = PuiIcon.PaletteRound,
                     title = "灵感构图",
-                    subtitle = "已放行 AI 构图特性，取帧由 linggan 模块提供",
+                    subtitle = "照片 → 右侧辅助构图 → 灵感构图 / 灵感推荐",
                     showDivider = false
                 )
             }
