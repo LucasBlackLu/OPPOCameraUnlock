@@ -61,6 +61,9 @@ class CameraPaletteModule : XposedModule() {
         /** 模式 id ↔ tag 的映射类（master / retroCamera / commonVideo …都在这张表里） */
         private const val MODE_MAP_CLS = "com.oplus.camera.v6"
 
+        /** 工具类：isSupportPalette(mode) 决定哪些模式有调色盘入口 */
+        private const val COMMON_UTIL = "com.oplus.camera.common.utils.CommonUtil"
+
         /** 滤镜组对象（addFrontAndBack 在这里，用来卡 鲜活/节日/庆典） */
         private const val FILTER_GROUP =
             "com.oplus.ocs.camera.ipusdk.processunit.filter.list.FilterGroup"
@@ -215,6 +218,7 @@ class CameraPaletteModule : XposedModule() {
         runCatching { hookFilterGroups(cl) }.onFailure { log("hookFilterGroups: $it") }
         runCatching { hookModeList(cl) }.onFailure { log("hookModeList: $it") }
         runCatching { hookModeSwap(cl) }.onFailure { log("hookModeSwap: $it") }
+        runCatching { hookPaletteGate(cl) }.onFailure { log("hookPaletteGate: $it") }
         runCatching { hookComposition(cl) }.onFailure { log("hookComposition: $it") }
         if (TRACE_INSPIRATION) runCatching { traceInspiration(cl) }.onFailure { log("traceInspiration: $it") }
 
@@ -481,6 +485,46 @@ class CameraPaletteModule : XposedModule() {
                 g.invoke(null, "persist.camunlock.pop.swap", true) as Boolean
             }.getOrDefault(true)
         }
+    }
+
+    /**
+     * 调色盘入口的模式白名单。
+     *
+     * `com.oplus.camera.common.utils.CommonUtil.isSupportPalette(String mode)` 原文：
+     *
+     *     if (!CameraConfig.d("com.oplus.feature.color.palette.support", false, false)) return false;
+     *     return "common".equals(mode) || "portrait".equals(mode) || "night".equals(mode);
+     *
+     * 大师（master）不在名单里，所以大师模式没有调色盘入口。这里直接返回 true。
+     * 开关：persist.camunlock.palette.allmode，默认开。
+     */
+    private fun hookPaletteGate(cl: ClassLoader) {
+        val cls = runCatching { cl.loadClass(COMMON_UTIL) }.getOrNull()
+        if (cls == null) {
+            log("WARN: $COMMON_UTIL not found")
+            return
+        }
+        val m = runCatching { cls.getDeclaredMethod("isSupportPalette", String::class.java) }.getOrNull()
+        if (m == null) {
+            log("WARN: isSupportPalette not found")
+            return
+        }
+        hook(m).intercept { chain ->
+            val mode = chain.getArg(0) as? String
+            val on = synchronized(switchCache) {
+                switchCache.getOrPut("paletteAll") {
+                    runCatching {
+                        val c = Class.forName("android.os.SystemProperties")
+                        val g = c.getMethod("getBoolean", String::class.java, java.lang.Boolean.TYPE)
+                        g.invoke(null, "persist.camunlock.palette.allmode", true) as Boolean
+                    }.getOrDefault(true)
+                }
+            }
+            if (!on) return@intercept chain.proceed()
+            logOnce("isSupportPalette(" + mode + ") -> true")
+            true
+        }
+        log("CommonUtil.isSupportPalette hooked（所有模式放行调色盘）")
     }
 
     // ------------------------------------------------------------ filter groups
