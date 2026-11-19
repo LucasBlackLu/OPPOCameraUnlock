@@ -58,6 +58,9 @@ class CameraPaletteModule : XposedModule() {
         /** POP 模式的模式名（资源 camera_mode_retro_camera 的中文值就是 "POP"） */
         private const val POP_MODE = "retro_camera_mode"
 
+        /** 模式 id ↔ tag 的映射类（master / retroCamera / commonVideo …都在这张表里） */
+        private const val MODE_MAP_CLS = "com.oplus.camera.v6"
+
         /** 滤镜组对象（addFrontAndBack 在这里，用来卡 鲜活/节日/庆典） */
         private const val FILTER_GROUP =
             "com.oplus.ocs.camera.ipusdk.processunit.filter.list.FilterGroup"
@@ -208,6 +211,7 @@ class CameraPaletteModule : XposedModule() {
         runCatching { hookPaletteColors(cl) }.onFailure { log("hookPaletteColors: $it") }
         runCatching { hookFilterGroups(cl) }.onFailure { log("hookFilterGroups: $it") }
         runCatching { hookModeList(cl) }.onFailure { log("hookModeList: $it") }
+        runCatching { hookModeSwap(cl) }.onFailure { log("hookModeSwap: $it") }
         runCatching { hookComposition(cl) }.onFailure { log("hookComposition: $it") }
         if (TRACE_INSPIRATION) runCatching { traceInspiration(cl) }.onFailure { log("traceInspiration: $it") }
 
@@ -414,6 +418,64 @@ class CameraPaletteModule : XposedModule() {
                 val c = Class.forName("android.os.SystemProperties")
                 val g = c.getMethod("getBoolean", String::class.java, java.lang.Boolean.TYPE)
                 g.invoke(null, "persist.camunlock.pop", true) as Boolean
+            }.getOrDefault(true)
+        }
+    }
+
+    /**
+     * 模式条那 5 个格子是 APK 里另一张表挑出来的（不在 mode_type_list 里），
+     * 而 `com.oplus.camera.v6` 是模式 id ↔ tag 的映射表（"master" / "retroCamera" / …）。
+     *
+     * 兜底方案：把大师那格换成 POP —— 在映射里做双向替换，
+     * master ⇄ retro_camera_mode / retroCamera。开关 persist.camunlock.pop.swap，默认开。
+     */
+    private fun hookModeSwap(cl: ClassLoader) {
+        val cls = runCatching { cl.loadClass(MODE_MAP_CLS) }.getOrNull()
+        if (cls == null) {
+            log("WARN: $MODE_MAP_CLS not found")
+            return
+        }
+        var n = 0
+        cls.declaredMethods.forEach { m ->
+            if (!Modifier.isStatic(m.modifiers)) return@forEach
+            if (m.parameterTypes.size != 1 || m.parameterTypes[0] != String::class.java) return@forEach
+            if (m.returnType != String::class.java) return@forEach
+            runCatching {
+                hook(m).intercept { chain ->
+                    val arg = chain.getArg(0) as? String
+                    val mapped = swapMode(arg)
+                    if (mapped != null) {
+                        logOnce("mode swap: $arg -> $mapped (${m.name})")
+                        mapped
+                    } else chain.proceed()
+                }
+                n++
+            }.onFailure { log("hook ${m.name}: $it") }
+        }
+        log("$MODE_MAP_CLS String 映射 hooked=$n")
+    }
+
+    /** master ⇄ POP 的双向替换；开关关着返回 null（走原实现） */
+    private fun swapMode(arg: String?): String? {
+        if (arg == null) return null
+        if (!popSwapEnabled()) return null
+        return when (arg) {
+            "master", "master_mode", "master_video_mode", "masterVideo" -> {
+                if (arg.endsWith("_mode")) "retro_camera_mode" else "retroCamera"
+            }
+            "retro_camera_mode", "retroCamera" -> {
+                if (arg.endsWith("_mode")) "master_video_mode" else "masterVideo"
+            }
+            else -> null
+        }
+    }
+
+    private fun popSwapEnabled(): Boolean = synchronized(switchCache) {
+        switchCache.getOrPut("popswap") {
+            runCatching {
+                val c = Class.forName("android.os.SystemProperties")
+                val g = c.getMethod("getBoolean", String::class.java, java.lang.Boolean.TYPE)
+                g.invoke(null, "persist.camunlock.pop.swap", true) as Boolean
             }.getOrDefault(true)
         }
     }
