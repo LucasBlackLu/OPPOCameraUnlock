@@ -111,7 +111,8 @@ fun SettingsPage(connected: Boolean, scoped: Boolean, root: Boolean) {
             val switches = listOf(
                 Triple("lively", "鲜活", "vibe.rgba.bin"),
                 Triple("festival", "节日", "festival.rgba.bin"),
-                Triple("ceremony", "庆典", "ceremony.rgba.bin")
+                Triple("ceremony", "庆典", "ceremony.rgba.bin"),
+                Triple("director", "导演联名", "姜文 / 贾樟柯")
             )
             var state by remember { mutableStateOf(switches.associate { it.first to false }) }
             LaunchedEffect(Unit) {

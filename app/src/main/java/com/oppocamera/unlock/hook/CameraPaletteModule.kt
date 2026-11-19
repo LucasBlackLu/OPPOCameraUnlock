@@ -52,6 +52,12 @@ class CameraPaletteModule : XposedModule() {
         private const val FILTER_GROUPS =
             "com.oplus.ocs.camera.ipusdk.processunit.filter.list.FilterGroupManager"
 
+        /** unit.sdk 里解析 camera_unit_config 的类（mode_type_list 由它读） */
+        private const val JSON_PARSER = "com.oplus.ocs.camera.configure.JsonParser"
+
+        /** POP 模式的模式名（资源 camera_mode_retro_camera 的中文值就是 "POP"） */
+        private const val POP_MODE = "retro_camera_mode"
+
         /** 滤镜组对象（addFrontAndBack 在这里，用来卡 鲜活/节日/庆典） */
         private const val FILTER_GROUP =
             "com.oplus.ocs.camera.ipusdk.processunit.filter.list.FilterGroup"
@@ -91,11 +97,21 @@ class CameraPaletteModule : XposedModule() {
         /** 带开关的标志字段：字段名 → 开关名（开关关着就不设 true） */
         private val FILTER_FLAG_SWITCH = mapOf(
             "sbIsSupportFestivalFilter" to "festival",
-            "sbIsSupportLivelyFilter" to "lively"
+            "sbIsSupportLivelyFilter" to "lively",
+            "sbIsSupportJzkMovieFilter" to "director"
         )
 
-        /** 导演联名滤镜（姜文 / 贾樟柯）——按需求不放行，别加回 KEY/FIELD 里 */
+        /** 导演联名滤镜（姜文 / 贾樟柯）—— 默认关，app 里开关打开才放行 */
         private val FILTER_SKIP = listOf("Director", "DirectorRUS", "Jzk", "jzk", "Jiangwen", "jangwen")
+
+        /** 只看开关的 key：key → 开关名（开关关着就不强制 true） */
+        private val SWITCH_KEYS = mapOf(
+            "com.oplus.director.filter.support" to "director",
+            "com.oplus.director.filter.rus" to "director",
+            "com.oplus.support.jzk.movie.filter" to "director",
+            "com.oplus.filter.festival.support" to "festival",
+            "com.oplus.filter.lively.support" to "lively"
+        )
 
         /**
          * 用系统属性做的开关（默认关）：persist.camunlock.filter.<name> = 1
@@ -191,6 +207,7 @@ class CameraPaletteModule : XposedModule() {
         runCatching { hookInit(cl, COMBINE_SDK) }.onFailure { log("hookInitSdk: $it") }
         runCatching { hookPaletteColors(cl) }.onFailure { log("hookPaletteColors: $it") }
         runCatching { hookFilterGroups(cl) }.onFailure { log("hookFilterGroups: $it") }
+        runCatching { hookModeList(cl) }.onFailure { log("hookModeList: $it") }
         runCatching { hookComposition(cl) }.onFailure { log("hookComposition: $it") }
         if (TRACE_INSPIRATION) runCatching { traceInspiration(cl) }.onFailure { log("traceInspiration: $it") }
 
@@ -343,6 +360,64 @@ class CameraPaletteModule : XposedModule() {
         log("$className init/6 hooked=$n")
     }
 
+    // ------------------------------------------------------------ mode list（POP）
+
+    /**
+     * unit.sdk 里 `com.oplus.ocs.camera.configure.JsonParser.parseSupportedMode()` 读
+     * `camera_unit_config` 的 `mode_type_list`，返回 Map<摄像头 id, List<模式名>>。
+     * 相机模式条就是从这里来的。
+     *
+     * 做法：先把它解析出来的东西打一条日志（诊断），再把 `retro_camera_mode`（= POP）
+     * 塞进每个摄像头的模式列表最前面。开关：persist.camunlock.pop，默认开。
+     */
+    private fun hookModeList(cl: ClassLoader) {
+        val cls = runCatching { cl.loadClass(JSON_PARSER) }.getOrNull()
+        if (cls == null) {
+            log("WARN: $JSON_PARSER not found")
+            return
+        }
+        val m = runCatching { cls.getDeclaredMethod("parseSupportedMode") }.getOrNull()
+        if (m == null) {
+            log("WARN: parseSupportedMode not found")
+            return
+        }
+        hook(m).intercept { chain ->
+            val r = chain.proceed()
+            val map = r as? Map<*, *> ?: return@intercept r
+            runCatching {
+                logOnce("mode_type_list: " + map.entries.joinToString("; ") { e ->
+                    e.key.toString() + "=" + (e.value as? Collection<*>)?.joinToString(",", "[", "]")
+                })
+            }
+            if (!popEnabled()) return@intercept r
+            runCatching {
+                val out = LinkedHashMap<Any?, Any?>()
+                map.forEach { (k, v) ->
+                    val list = (v as? Collection<*>)?.map { it?.toString() }?.toMutableList()
+                    if (list != null) {
+                        list.remove(POP_MODE)
+                        list.add(0, POP_MODE)
+                        out[k] = list
+                    } else out[k] = v
+                }
+                logOnce("mode_type_list: 已注入 $POP_MODE")
+                return@intercept out
+            }
+            r
+        }
+        log("JsonParser.parseSupportedMode hooked（POP 注入）")
+    }
+
+    private fun popEnabled(): Boolean = synchronized(switchCache) {
+        switchCache.getOrPut("pop") {
+            runCatching {
+                val c = Class.forName("android.os.SystemProperties")
+                val g = c.getMethod("getBoolean", String::class.java, java.lang.Boolean.TYPE)
+                g.invoke(null, "persist.camunlock.pop", true) as Boolean
+            }.getOrDefault(true)
+        }
+    }
+
     // ------------------------------------------------------------ filter groups
 
     /**
@@ -372,7 +447,8 @@ class CameraPaletteModule : XposedModule() {
                 if (m.parameterTypes.isNotEmpty()) return@forEach
                 if (m.returnType != Boolean::class.javaPrimitiveType) return@forEach
                 if (!m.name.startsWith("is")) return@forEach
-                if (FILTER_SKIP.any { m.name.contains(it, ignoreCase = true) }) return@forEach
+                // 导演联名（姜文/贾樟柯）只在开关打开时放行
+                if (FILTER_SKIP.any { m.name.contains(it, ignoreCase = true) } && !switchOn("director")) return@forEach
                 if (m.name.contains("Festival", true) && !switchOn("festival")) return@forEach
                 if (m.name.contains("Lively", true) && !switchOn("lively")) return@forEach
                 hook(m).intercept {
@@ -414,6 +490,9 @@ class CameraPaletteModule : XposedModule() {
                     val k = chain.getArg(0) as? String
                     if (k != null && k in FILTER_KEYS) {
                         logOnce("force $k -> true")
+                        true
+                    } else if (k != null && SWITCH_KEYS.containsKey(k) && switchOn(SWITCH_KEYS.getValue(k))) {
+                        logOnce("force $k -> true (switch " + SWITCH_KEYS.getValue(k) + ")")
                         true
                     } else chain.proceed()
                 }
