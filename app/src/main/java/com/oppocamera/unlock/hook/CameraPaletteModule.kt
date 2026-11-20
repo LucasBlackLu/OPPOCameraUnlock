@@ -236,6 +236,7 @@ class CameraPaletteModule : XposedModule() {
         runCatching { hookPaletteGate(cl) }.onFailure { log("hookPaletteGate: $it") }
         runCatching { hookConfigDecrypt(cl) }.onFailure { log("hookConfigDecrypt: $it") }
         if (TRACE_MODE_BUILDERS) runCatching { probeModeBuilders(cl) }.onFailure { log("probeModeBuilders: $it") }
+        runCatching { dumpModeIds(cl) }.onFailure { log("dumpModeIds: $it") }
         runCatching { hookComposition(cl) }.onFailure { log("hookComposition: $it") }
         if (TRACE_INSPIRATION) runCatching { traceInspiration(cl) }.onFailure { log("traceInspiration: $it") }
 
@@ -633,6 +634,69 @@ class CameraPaletteModule : XposedModule() {
             }
             log("probe: $name 挂了 $n 个方法")
         }
+    }
+
+    /**
+     * 查「模式 tag → mode_id」。
+     *
+     * `mode_data.db` 的 `mode_info.mode_id` 就是模式条排序用的 id；
+     * 相机自己用 `zp.j.k(String):I` 把 tag 转成 id（`CameraManager$r` 里就是
+     * `Ac()` 拿当前 tag → `zp.j.k()` → `zp.j.e()` 去查 DB）。
+     *
+     * 这里直接把关心的 tag 全查一遍打到日志里，顺便 hook 一下 k()，
+     * 看看真实运行时会用哪些 tag。
+     */
+    private fun dumpModeIds(cl: ClassLoader) {
+        val cls = runCatching { cl.loadClass("zp.j") }.getOrNull()
+        if (cls == null) {
+            log("WARN: zp.j not found")
+            return
+        }
+        // 注意：不能在这里主动 invoke k()/e()（会卡住相机启动线程），
+        // 只 hook 它们，等相机自己调用时把 tag/资源 id/DB id 打出来。
+        runCatching { cls.getDeclaredMethod("k", String::class.java) }.getOrNull()?.let { k ->
+            runCatching {
+                hook(k).intercept { chain ->
+                    val a = chain.getArg(0) as? String
+                    val v = chain.proceed()
+                    log("zp.j.k(" + a + ") -> " + v)
+                    v
+                }
+            }.onFailure { log("hook zp.j.k: $it") }
+        }
+        runCatching { cls.getDeclaredMethod("e", Integer.TYPE) }.getOrNull()?.let { e ->
+            runCatching {
+                hook(e).intercept { chain ->
+                    val a = chain.getArg(0)
+                    val v = chain.proceed()
+                    log("zp.j.e(" + a + ") -> " + v)
+                    v
+                }
+            }.onFailure { log("hook zp.j.e: $it") }
+        }
+        log("zp.j.k / e 已挂（只记录，不主动调用）")
+
+        // 延迟 6 秒再主动查（启动线程里直接 invoke 会卡住）
+        runCatching {
+            val th = Thread {
+                try { Thread.sleep(6000) } catch (_: Throwable) {}
+                runCatching {
+                    val tags = listOf("retroCamera", "masterVideo", "commonVideo", "common",
+                        "portrait", "professional", "more", "night", "highPixel", "aiScenery")
+                    val e = runCatching { cls.getDeclaredMethod("e", Integer.TYPE) }.getOrNull()
+                    val k = cls.getDeclaredMethod("k", String::class.java)
+                    tags.forEach { t ->
+                        runCatching {
+                            val kv = k.invoke(null, t)
+                            val ev = e?.invoke(null, kv)
+                            log("LATE modeId(" + t + ") k=" + kv + " e=" + ev)
+                        }
+                    }
+                }
+            }
+            th.isDaemon = true
+            th.start()
+        }.onFailure { log("late probe: $it") }
     }
 
     // ------------------------------------------------------------ filter groups

@@ -278,9 +278,47 @@ CI（`.github/workflows/build.yml`）：
     hook 装上了（`hooked=2`）但切模式时该方法不被调用；
   - 探过 `com.oplus.camera.o6` / `ha.q0` / `CameraManager`，没有返回 5 个模式名的方法。
 
-  **结论**：模式条那 5 格是 APK 里按机型/项目写死的表，配置层没有开关。
-  下一步要么逆出那张表（还没找到），要么走 native 那条线（`libAlgoInterface.so` 打 NOP +
-  路径重定向，参考 OmniCam-Muse 的 Reno16 POP 移植）。
+  **2026-11-21 更新：POP 进模式条的关键点全部打通了**
+
+  1. **模式条不是 APK 写死**，是相机自己的数据库
+     `/data/user/0/com.oplus.camera/databases/mode_data.db`：
+
+     ```sql
+     CREATE TABLE mode_info(mode_name TEXT, mode_id INT, position TEXT, rank INT,
+                            support_edit TEXT, support_front TEXT);
+     ```
+
+     `position='position_headline'` 按 `rank` 排序就是那 5 格；`position='mode_panel'` 是「更多」面板。
+
+  2. **`mode_id` = `zp.j.e(zp.j.k(模式tag))`**。运行时 dump 出来的对照表：
+
+     | tag | resource id | **DB id** |
+     |---|---|---|
+     | retroCamera（POP） | 2131821668 | **42** |
+     | aiScenery（风光） | 2131821617 | 37 |
+     | masterVideo | 2131821667 | 36 |
+     | highPixel | 2131821441 | 31 |
+     | more | 2131821653 | 23 |
+     | portrait | 2131821665 | 22 |
+     | commonVideo | 2131821680 | 21 |
+     | common | 2131821626 | 20 |
+     | night | 2131821662 | 5 |
+     | professional | 2131821650 | 4 |
+
+     ⚠️ 直接拿 resource id（2131821668）去填 `mode_id` 会让相机启动就崩
+     （`Resources$NotFoundException: String resource ID #0x0`），必须是 `e()` 出来的小整数。
+
+  3. **写入后就生效**：`INSERT mode_info('retroCamera', 42, 'position_headline', 0, ...)`
+     + 把其它 headline 行的 rank 顺移，重启相机 —— 相机不再崩（crash 0），
+     POP 排在模式条第一位。
+     工具：`_tools/make_final_db.py`（造库）、`_tools/dev/apply_final_db.sh`（换库/重启）。
+
+  4. **native 依赖**：换上了 Reno17p 的 `libBasicTonePhoto.so`（591,552 B）。
+     原厂那颗 `palette` 相关符号是 **0 个**，Reno 版有 **6 个** —— POP/调色盘走 BasicTone
+     时就是靠它。已进模块 `payload/lib64/`，`post-fs-data.sh` 里绑定。
+
+  剩下的还是 native 深水区：`libAlgoInterface.so` 的三处 NOP + 路径重定向
+  （参考 OmniCam-Muse 的 Reno16 POP 移植），那部分是让 POP 出片/滑杆正常的。
 
   **2026-11-21 更新：模式条的真正来源找到了** —— 不是 APK 写死，是相机自己的数据库
   `/data/user/0/com.oplus.camera/databases/mode_data.db`：
