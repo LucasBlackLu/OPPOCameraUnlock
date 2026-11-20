@@ -68,6 +68,16 @@ class CameraPaletteModule : XposedModule() {
         private const val UPDATE_HELPER =
             "com.oplus.ocs.camera.consumer.apsAdapter.update.UpdateHelper"
 
+        /** 临时诊断：探测模式条构建类（默认关；要查 POP 入口时改 true） */
+        private const val TRACE_MODE_BUILDERS = false
+
+        /** 同时含 masterVideo + retroCamera 常量的候选类 */
+        private val MODE_PROBE_CLASSES = listOf(
+            "com.oplus.camera.o6",
+            "ha.q0",
+            "com.oplus.camera.CameraManager"
+        )
+
         /** 滤镜组对象（addFrontAndBack 在这里，用来卡 鲜活/节日/庆典） */
         private const val FILTER_GROUP =
             "com.oplus.ocs.camera.ipusdk.processunit.filter.list.FilterGroup"
@@ -225,6 +235,7 @@ class CameraPaletteModule : XposedModule() {
         runCatching { hookModeSwap(cl) }.onFailure { log("hookModeSwap: $it") }
         runCatching { hookPaletteGate(cl) }.onFailure { log("hookPaletteGate: $it") }
         runCatching { hookConfigDecrypt(cl) }.onFailure { log("hookConfigDecrypt: $it") }
+        if (TRACE_MODE_BUILDERS) runCatching { probeModeBuilders(cl) }.onFailure { log("probeModeBuilders: $it") }
         runCatching { hookComposition(cl) }.onFailure { log("hookComposition: $it") }
         if (TRACE_INSPIRATION) runCatching { traceInspiration(cl) }.onFailure { log("traceInspiration: $it") }
 
@@ -583,6 +594,45 @@ class CameraPaletteModule : XposedModule() {
             r
         }
         log("UpdateHelper.getConfigString hooked（解密结果落盘）")
+    }
+
+    /**
+     * 诊断用：找出「模式条那 5 格」是哪个类拼出来的。
+     *
+     * 已知同时含 masterVideo / retroCamera 常量的类里，挑最像的 3 个，
+     * 把它们「返回 List / String / *Mode」的方法全都 hook 一遍，打出 入参 → 返回值。
+     * 谁返回的是 5 个模式名，谁就是目标。
+     */
+    private fun probeModeBuilders(cl: ClassLoader) {
+        MODE_PROBE_CLASSES.forEach { name ->
+            val cls = runCatching { cl.loadClass(name) }.getOrNull()
+            if (cls == null) {
+                log("probe: $name 不存在")
+                return@forEach
+            }
+            var n = 0
+            cls.declaredMethods.forEach { m ->
+                if (m.parameterCount > 2) return@forEach
+                val rt: Class<*> = m.returnType
+                val ok: Boolean = List::class.java.isAssignableFrom(rt) ||
+                        rt == String::class.java ||
+                        rt.name.endsWith("BaseMode") ||
+                        rt.simpleName.contains("Mode")
+                if (!ok) return@forEach
+                runCatching {
+                    hook(m).intercept { chain ->
+                        val r: Any? = chain.proceed()
+                        runCatching {
+                            val a = chain.args.joinToString(",") { it?.toString()?.take(20) ?: "null" }
+                            logOnce("PROBE " + cls.simpleName + "." + m.name + "(" + a + ") -> " + (r?.toString()?.take(90) ?: "null"))
+                        }
+                        r
+                    }
+                    n++
+                }
+            }
+            log("probe: $name 挂了 $n 个方法")
+        }
     }
 
     // ------------------------------------------------------------ filter groups
@@ -1004,34 +1054,32 @@ class CameraPaletteModule : XposedModule() {
 
     /** 取帧类：预览帧在相机线程上路过这里，顺手记一份。 */
     private fun hookFrameSource(cl: ClassLoader) {
-        val cls = FRAME_CLASSES.firstNotNullOfOrNull { name ->
-            runCatching { Class.forName(name, false, cl) }.getOrNull()
-        }
-        if (cls == null) {
-            log("取帧类未命中: $FRAME_CLASSES")
-            return
-        }
-        log("取帧类命中: ${cls.name}")
+        // 不能"第一个存在的类就是对的"：TB 包里 tb.u / tb.q / tb.d 在不同版本里都存在，
+        // 但只有其中一个带「11 参 + ≥2 HardwareBuffer」的帧方法。逐个试，谁有方法用谁。
         var n = 0
-        // 7.006/7.016 的帧方法是 f(11 参)；7.013 把同样的 11 参挪到了构造里（run() 执行）。
-        // 两种都试：方法名不限，只要「11 个参数、其中至少 2 个 HardwareBuffer」。
-        cls.declaredMethods.forEach { m ->
-            if (n > 0) return@forEach
-            if (m.parameterCount != 11) return@forEach
-            if (m.parameterTypes.count { it == HardwareBuffer::class.java } < 2) return@forEach
-            runCatching {
-                hook(m).intercept { chain ->
-                    runCatching {
-                        val picked = AiBridge.pickFrame(chain.args)
-                        AiBridge.logOnce("取帧 " + AiBridge.describeFrames(chain.args) + " -> " + AiBridge.describe(picked))
-                        AiBridge.keepFrame(picked)
+        for (name in FRAME_CLASSES) {
+            if (n > 0) break
+            val cls = runCatching { Class.forName(name, false, cl) }.getOrNull() ?: continue
+            log("取帧候选类: ${cls.name}")
+            cls.declaredMethods.forEach { m ->
+                if (n > 0) return@forEach
+                if (m.parameterCount != 11) return@forEach
+                if (m.parameterTypes.count { it == HardwareBuffer::class.java } < 2) return@forEach
+                runCatching {
+                    hook(m).intercept { chain ->
+                        runCatching {
+                            val picked = AiBridge.pickFrame(chain.args)
+                            AiBridge.logOnce("取帧 " + AiBridge.describeFrames(chain.args) + " -> " + AiBridge.describe(picked))
+                            AiBridge.keepFrame(picked)
+                        }
+                        chain.proceed()
                     }
-                    chain.proceed()
-                }
-                n++
-                log("取帧方法命中: ${m.name}")
-            }.onFailure { log("取帧方法挂钩失败: $it") }
+                    n++
+                    log("取帧类命中: ${cls.name} / 方法: ${m.name}")
+                }.onFailure { log("取帧方法挂钩失败: $it") }
+            }
         }
+        if (n == 0) log("取帧类未命中: $FRAME_CLASSES")
         log("取帧方法 hooked=$n")
     }
 

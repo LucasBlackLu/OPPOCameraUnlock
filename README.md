@@ -265,10 +265,24 @@ CI（`.github/workflows/build.yml`）：
 
 ## 九、已知问题
 
-- **POP 模式还没出现在模式条**：`retro_camera_mode` 已进 `mode_type_list`（hook 日志可证），
-  但模式条那 5 个格子由 APK 另一张表挑，暂未打通。
-- **鲜活 / 节日 / 庆典**：LUT（`vibe/festival/ceremony.rgba.bin`）在两台机器的固件里都不存在，
-  所以做成开关、默认关，开了只会多出条目不会有效果。
+- **POP 模式没出现在模式条（未打通）**。已经查实的部分：
+  - `retro_camera_mode` 在 `camera_unit_config` 里注册了 16 处，SDK 的
+    `JsonParser.parseSupportedMode()` 解析结果里**也有**它（hook 日志可证），
+    甚至把它插到 `mode_type_list` 最前，模式条 5 格**纹丝不动**；
+  - Reno17p 自己的 5 个 config（`oplus_camera_config`（已解密）、
+    `oplus_camera_preview_decision_config.json`、`algo_switch_config`、
+    `preview_decision_params.json`、`aps_config`）里 **`retro` 出现 0 次**；
+  - 换 7.016.29（Reno17p 原版 APK，含 `enterPopProfessionalMode` 那 10 个方法）
+    后模式条仍是大屏「大师 / 视频 / 照片 / 人像」；
+  - 用 `com.oplus.camera.v6`（7.016 里的模式 id↔tag 映射表）做 master⇄retro 交换，
+    hook 装上了（`hooked=2`）但切模式时该方法不被调用；
+  - 探过 `com.oplus.camera.o6` / `ha.q0` / `CameraManager`，没有返回 5 个模式名的方法。
+
+  **结论**：模式条那 5 格是 APK 里按机型/项目写死的表，配置层没有开关。
+  下一步要么逆出那张表（还没找到），要么走 native 那条线（`libAlgoInterface.so` 打 NOP +
+  路径重定向，参考 OmniCam-Muse 的 Reno16 POP 移植）。
+- **鲜活 / 节日 / 庆典**：LUT（`vibe/festival/ceremony.rgba.bin`）在两台机器固件里都不存在，
+  所以做成开关、默认关，开了只多出条目不会有效果。
 - **7.013.60 没有 POP 参数面板**（`enterPopProfessionalMode` 只在 7.016.29 里）。
 
 ---
