@@ -281,6 +281,20 @@ CI（`.github/workflows/build.yml`）：
   **结论**：模式条那 5 格是 APK 里按机型/项目写死的表，配置层没有开关。
   下一步要么逆出那张表（还没找到），要么走 native 那条线（`libAlgoInterface.so` 打 NOP +
   路径重定向，参考 OmniCam-Muse 的 Reno16 POP 移植）。
+
+  **2026-11-21 更新：模式条的真正来源找到了** —— 不是 APK 写死，是相机自己的数据库
+  `/data/user/0/com.oplus.camera/databases/mode_data.db`：
+
+  ```sql
+  CREATE TABLE mode_info(mode_name TEXT, mode_id INT, position TEXT, rank INT,
+                         support_edit TEXT, support_front TEXT);
+  ```
+
+  `position='position_headline'` 就是模式条那 5 格（按 `rank` 排序），
+  `position='position_mode_panel'` 是「更多」面板。实测往 headline 插一行，
+  模式条立刻多/变一格 —— 也就是**这条路能控制模式条**。
+  缺的只是 `retroCamera` 的 `mode_id`：插 id=37/38 显示的是「风光」（未知 id 的兜底标签），
+  还没试到正确的 id。工具留在 `_tools/add_pop_db.py` + `swap_modedb.sh`。
 - **鲜活 / 节日 / 庆典**：LUT（`vibe/festival/ceremony.rgba.bin`）在两台机器固件里都不存在，
   所以做成开关、默认关，开了只多出条目不会有效果。
 - **7.013.60 没有 POP 参数面板**（`enterPopProfessionalMode` 只在 7.016.29 里）。
