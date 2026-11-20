@@ -64,6 +64,10 @@ class CameraPaletteModule : XposedModule() {
         /** 工具类：isSupportPalette(mode) 决定哪些模式有调色盘入口 */
         private const val COMMON_UTIL = "com.oplus.camera.common.utils.CommonUtil"
 
+        /** unit.sdk 里读加密配置的入口（getConfigString 用 JNI 解密） */
+        private const val UPDATE_HELPER =
+            "com.oplus.ocs.camera.consumer.apsAdapter.update.UpdateHelper"
+
         /** 滤镜组对象（addFrontAndBack 在这里，用来卡 鲜活/节日/庆典） */
         private const val FILTER_GROUP =
             "com.oplus.ocs.camera.ipusdk.processunit.filter.list.FilterGroup"
@@ -200,6 +204,7 @@ class CameraPaletteModule : XposedModule() {
     private val switchCache = HashMap<String, Boolean>()
     @Volatile private var adapterLogged = false
     @Volatile private var trackLogged = false
+    @Volatile private var decodedOnce = false
 
     @Volatile private var deployed = false
     @Volatile private var settingPath: String? = null
@@ -219,6 +224,7 @@ class CameraPaletteModule : XposedModule() {
         runCatching { hookModeList(cl) }.onFailure { log("hookModeList: $it") }
         runCatching { hookModeSwap(cl) }.onFailure { log("hookModeSwap: $it") }
         runCatching { hookPaletteGate(cl) }.onFailure { log("hookPaletteGate: $it") }
+        runCatching { hookConfigDecrypt(cl) }.onFailure { log("hookConfigDecrypt: $it") }
         runCatching { hookComposition(cl) }.onFailure { log("hookComposition: $it") }
         if (TRACE_INSPIRATION) runCatching { traceInspiration(cl) }.onFailure { log("traceInspiration: $it") }
 
@@ -525,6 +531,58 @@ class CameraPaletteModule : XposedModule() {
             true
         }
         log("CommonUtil.isSupportPalette hooked（所有模式放行调色盘）")
+    }
+
+    /**
+     * `/odm/etc/camera/config/oplus_camera_config` 是加密二进制（文件头 0x01 0x01）。
+     *
+     * 解密链在 unit.sdk 里：
+     *   ApsUtils.getConfigData(Context)  → 拼 CONFIG_JSON_PATH + "oplus_camera_config"
+     *   UpdateHelper.getValidConfigData  → 读文件字节
+     *   UpdateHelper.getConfigString(byte[], OplusStringJNI) → **JNI 解密成字符串**
+     *
+     * 所以不用啃 .so：hook 最后这一步，把解密结果落到相机私有目录（root 可读）。
+     * 下一步就能读懂它的结构，再让这个 hook 直接返回改过的 JSON。
+     */
+    private fun hookConfigDecrypt(cl: ClassLoader) {
+        val cls = runCatching { cl.loadClass(UPDATE_HELPER) }.getOrNull()
+        if (cls == null) {
+            log("WARN: $UPDATE_HELPER not found")
+            return
+        }
+        val jniCls = runCatching {
+            cl.loadClass("com.oplus.ocs.camera.consumer.apsAdapter.config.OplusStringJNI")
+        }.getOrNull()
+        if (jniCls == null) {
+            log("WARN: OplusStringJNI not found")
+            return
+        }
+        val m = runCatching {
+            cls.getDeclaredMethod("getConfigString", ByteArray::class.java, jniCls)
+        }.getOrNull()
+        if (m == null) {
+            log("WARN: getConfigString not found")
+            return
+        }
+        hook(m).intercept { chain ->
+            val r = chain.proceed() as? String
+            if (r != null && r.length > 200) {
+                // 每次调用都落盘（用长度+hash 命名），加密的 oplus_camera_config 也在里面
+                runCatching {
+                    val app = currentApplication()
+                    val dir = File(app!!.filesDir, "decoded")
+                    dir.mkdirs()
+                    val tag = Integer.toHexString(r.hashCode())
+                    val f = File(dir, "cfg_" + r.length + "_" + tag + ".json")
+                    if (!f.exists()) {
+                        f.writeText(r)
+                        log("decoded config -> " + f.name + " (" + r.length + " chars)")
+                    }
+                }
+            }
+            r
+        }
+        log("UpdateHelper.getConfigString hooked（解密结果落盘）")
     }
 
     // ------------------------------------------------------------ filter groups
