@@ -782,6 +782,16 @@ class CameraPaletteModule : XposedModule() {
             log("FilterGroupManager.getConfigBooleanValue hooked=$n")
         }.onFailure { log("hook FilterGroupManager.getConfigBooleanValue: $it") }
 
+        // 5) POP（retro）那组滤镜：CCD / 拍立得 / 流光 / 和光 / 浓郁 / 复古 / 清新 / 通透
+        //    initRetroCameraFilterGroup() 是无条件 add 9 个滤镜的，但只有进 retro 模式才会被调用；
+        //    这里主动调一次，保证 sRetroCameraFilterGroup 有内容。
+        runCatching {
+            val m = cls.getDeclaredMethod("initRetroCameraFilterGroup")
+            m.isAccessible = true
+            m.invoke(null)
+            log("initRetroCameraFilterGroup 已主动调用（POP 滤镜组填充）")
+        }.onFailure { log("initRetroCameraFilterGroup 调用失败: $it") }
+
         // 4) 鲜活/节日/庆典：initFilterGroup 里是无条件 addFrontAndBack 的，用户要求开关控制
         runCatching {
             val fg = cl.loadClass(FILTER_GROUP)
