@@ -27,7 +27,12 @@ Reno 17 的调色盘是「一整套 LUT + 一条三维查表流水线」，不�
   `vig`、`setting/Ditherout|FromXml|TriggerBIN` 全部从 `/odm` 递归拷过来，只加 palette
   和那几个原厂没有的 `SimTool_Palette_*.ini`。少 `lmt` 会让大师模式预览发灰。
 - **模式白名单**：`CommonUtil.isSupportPalette(mode)` 原厂只放行 `common / portrait / night`，
-  这里 hook 成恒真（`persist.camunlock.palette.allmode`），大师模式也能调出调色盘。
+  这里 hook 成恒真（`persist.camunlock.palette.allmode`），照片 / 人像 / 夜景都能调出调色盘。
+  大师/专业模式例外：那里**不注入、也不放行入口**（见下）。
+- **大师模式不注入**：实测注入 basictone 会把大师的 tone 打平（同画面 A/B：注入 0.026/87，
+  不注入 0.054/148，亮度与饱和度都掉一半）。所以按 `isSupportPalette(mode)` 记下的当前模式，
+  大师/专业直接走原厂路径、入口也回落到原厂白名单。要旧行为（大师里也有调色盘）：
+  `persist.camunlock.palette.master 1`（换 7.016.29 相机时必须开，否则 native 崩）。
 - **格子颜色**：换过 Reno 的 unit.sdk 后 `ipusdk.PaletteSeekbarColorTable` 存在，用真实现算色；
   不存在时才退回 stub（否则格子会被 `Recipe.empty()` 画成全黑）。
 
@@ -154,13 +159,14 @@ CI（`.github/workflows/build.yml`）：push 到 `main` / PR / 手动 → JDK 21
 
 | 开关 | 作用 |
 |---|---|
-| `persist.camunlock.palette.allmode` | 调色盘在所有模式可见（含大师），默认开 |
+| `persist.camunlock.palette.allmode` | 调色盘在照片/人像/夜景可见（大师始终不放行），默认开 |
+| `persist.camunlock.palette.master` | 让大师模式也注入+放行调色盘（会发灰；7.016.29 相机必须开，否则崩），默认关 |
 | `persist.camunlock.filter.dedup` | 滤镜同组同名去重（和光只留一条），默认开 |
 | `persist.camunlock.filter.director` | 放行导演联名滤镜（姜文 / 贾樟柯），默认关 |
 | `persist.camunlock.filter.{lively,festival,ceremony}` | 鲜活 / 节日 / 庆典，默认关（LUT 未随固件提供） |
 | `persist.camunlock.log` | 写日志（logcat + `files/camunlock/adapt.log`），默认开 |
 | `persist.camunlock.log.dump` | 额外打滤镜组内容等细节，默认关 |
-| `persist.camunlock.palette.off` | 诊断：完全不改 LUT 路径（本机会 native 崩，仅供排查） |
+| `persist.camunlock.palette.off` | 诊断：完全不改 LUT 路径（7.016.29 相机会 native 崩，仅供排查） |
 | `persist.camunlock.palette.device_setting` | 诊断：setting 用原厂那份（原厂缺 `SimTool_Palette_*`，会崩） |
 | `touch /data/adb/modules/oppo_camera_port/minimal` | 不替换任何系统文件，只保留 LSPosed 侧功能 |
 
@@ -168,19 +174,22 @@ CI（`.github/workflows/build.yml`）：push 到 `main` / PR / 手动 → JDK 21
 
 ## 已知问题 / 未验证
 
-- **大师模式预览偏灰偏暗**。同画面 A/B 实测（`screencap` 后算预览区平均饱和度）：
-  大师 0.026 / 亮度 87，照片 0.054 / 亮度 148。**换回原厂 7.006.121 相机同样存在**，
-  所以不是相机整包的问题；调色盘注入的内容（Reno 的 `SimTool_Master.ini` + palette）改了
-  大师的 tone 路径，尚未定位到具体一项。想对比可以 `persist.camunlock.palette.device_setting 1`（会崩，仅存档）。
-- **调色盘注入是必须的**：不注入 palette 目录时（`persist.camunlock.palette.off 1`）本机相机
-  直接 `SIGSEGV`（`libCombineLutJni.processV3`、`addr=0x20`）—— 原厂 `/odm` 里没有 palette。
+- **大师模式预览发灰（已修）**。原因不是相机版本：7.006.121 / 7.013.60 / 7.016.29 三个版本
+  配本模块都灰，卸载回原厂才好 —— 是调色盘的 basictone 注入把大师的 tone 打平了。
+  现在大师/专业模式不注入（见「功能 · 调色盘」），真机 A/B：大师 0.0455 / 114、照片 0.0461 / 114，
+  修复前是 0.026 / 87。代价是大师模式里没有调色盘入口。
+- **调色盘注入对非大师模式是必须的**：不注入 palette 目录时（`persist.camunlock.palette.off 1`）
+  7.016.29 相机直接 `SIGSEGV`（`libCombineLutJni.processV3`、`addr=0x20`）—— 原厂 `/odm` 里没有 palette；
+  原厂 7.006.121 不受影响（它本来就不带 palette 那套）。
+- **相机整包不再随模块发布**：`payload/apk/` 默认不打进 zip，`service.sh` 只在你自己放了
+  APK 时才补装；当前实装相机 = 设备原厂 7.006.121。
 - **POP / 实况调色盘不在本分支**：`retro_camera_mode` 相关 hook、retro 配置补丁、`setting_Retro`、
   retro 胶囊 UI 全部在 `main` 与 `backup/pop-wip-20261121` 分支上；模式条与配置层保持设备原厂。
 - **鲜活 / 节日 / 庆典**：LUT（`vibe/festival/ceremony.rgba.bin`）两台机器固件里都不存在，开了只多条目。
 - **未上机验证**：`--with-apk` 打包路径、其他 ColorOS 版本、前置摄像头的调色盘、
-  4K60 视频下的滤镜、相册重新编辑。
-- **分析 APK 一定要用设备实装的那份**（`/data/app/…/base.apk`，7.016.29
-  md5 `fbb77302d89dc710a2d28095fe5b2fa1`）：仓库 `payload` 里另一份同名构建 dex 全不同。
+  4K60 视频下的滤镜、相册重新编辑、横屏布局下的调色盘面板。
+- **分析 APK 一定要用设备实装的那份**（`/data/app/…/base.apk`）；仓库 `payload` 里另一份同名构建
+  dex 全不同，拿它逆会得出错误结论。
 
 ---
 

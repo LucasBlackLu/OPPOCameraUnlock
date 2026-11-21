@@ -14,10 +14,18 @@ import os
 import sys
 import zipfile
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MOD = os.path.join(BASE, 'magisk_module')
-OUT = os.path.join(BASE, 'out', 'oppo_camera_port_reno17p.zip')
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # CameraUnlock/repo
+# 模块构建目录（payload 所在）默认在仓库隔壁：CameraUnlock/magisk_module
+MOD = os.environ.get('CAMUNLOCK_MODULE') or os.path.join(BASE, 'magisk_module')
+if not os.path.isdir(MOD):
+    alt = os.path.join(os.path.dirname(BASE), 'magisk_module')
+    if os.path.isdir(alt):
+        MOD = alt
+OUT = os.environ.get('CAMUNLOCK_OUT') or os.path.join(
+    os.path.dirname(BASE), 'out', 'oppo_camera_port_reno17p.zip')
 WITH_APK = '--with-apk' in sys.argv
+if not os.path.isdir(MOD):
+    sys.exit('找不到模块目录：%s（可用环境变量 CAMUNLOCK_MODULE 指定）' % MOD)
 
 FILES = [
     'module.prop',
