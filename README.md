@@ -223,7 +223,7 @@ CI（`.github/workflows/build.yml`）：push 到 `main` / PR / 手动 → JDK 21
 
 本仓库未声明开源许可证（默认保留所有权利），使用前请先确认机型与风险。
 
-- 作者：**LucasBlackLu** · 酷安 [@2201999](https://www.coolapk.com/u/2201999)
+- 作者：**LucasBlackLu** · 酷安 [黑夜中的守护者](https://www.coolapk.com/u/2201999)
 - [libxposed API](https://github.com/libxposed/api) —— 模块框架
 - PUI 设计系统：作者 **天伞桜**（[GitHub](https://github.com/sakurakingfifth-debug/PUIInstaller) ·
   [酷安](https://www.coolapk.com/u/540690)）—— 界面骨架

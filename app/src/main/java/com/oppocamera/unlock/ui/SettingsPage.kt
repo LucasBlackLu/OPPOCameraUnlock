@@ -74,8 +74,8 @@ fun SettingsPage(connected: Boolean, scoped: Boolean, root: Boolean) {
                 )
                 PuiListRow(
                     icon = PuiIcon.Heart,
-                    title = "酷安 @2201999",
-                    subtitle = "去酷安找我 / 反馈问题",
+                    title = "酷安 · 黑夜中的守护者",
+                    subtitle = "关注我",
                     showChevron = true,
                     showDivider = false,
                     onClick = { Shell.openUrl(ctx, Const.COOLAPK) }
