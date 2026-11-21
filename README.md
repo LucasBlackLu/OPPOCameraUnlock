@@ -1,10 +1,14 @@
-# OPPO 相机解锁（调色盘 / 胶片 / POP / 灵感构图）
+# OPPO 相机解锁（调色盘 / 胶片 / 灵感构图）
 
 [![build](https://github.com/LucasBlackLu/OPPOCameraUnlock/actions/workflows/build.yml/badge.svg)](https://github.com/LucasBlackLu/OPPOCameraUnlock/actions/workflows/build.yml)
 [![release](https://img.shields.io/github/v/release/LucasBlackLu/OPPOCameraUnlock?include_prereleases&sort=semver)](https://github.com/LucasBlackLu/OPPOCameraUnlock/releases)
 
-把 Reno 17 Pro 的相机色彩能力搬到别的 ColorOS 机器上：**调色盘**、**胶片滤镜**、**实况调色盘 / POP**、
+把 Reno 17 Pro 的相机色彩能力搬到别的 ColorOS 机器上：**调色盘**、**胶片滤镜**、
 **灵感构图（AI 构图）**。
+
+> 本 `release` 分支是**发布线**，只放已经能用住的功能：调色盘、胶片滤镜、灵感构图。
+> **不含 POP / 实况调色盘**（`retro_camera_mode`）—— 那套试验代码留在 `main` 分支和
+> `backup/pop-wip-20261121` 分支上，需要时再取，不要往这条线里合。
 
 > 仅在 **OPPO X9（`PLJ110` / ColorOS 17 / Android 17）** 上实测可用。
 
@@ -23,7 +27,7 @@
 | 装什么 | 干什么 | 从哪来 |
 |---|---|---|
 | **LSPosed 模块** `com.oppocamera.unlock`（本仓库代码） | 部署 LUT、改配置返回值、hook 滤镜门控、接灵感构图取帧桥、提供各类开关 | Release 里的 `com.oppocamera.unlock-*.apk` |
-| **Magisk / KernelSU 模块** `oppo_camera_port`（源码在 [`magisk/`](magisk/)） | 换掉只读分区上的文件：相机 APK、`meishe_lut`、retro 配置、`unit.sdk.jar`、`libmsnativefilter.so`、retro UI 资源 | Release 里的 `oppo_camera_port_reno17p.zip` |
+| **Magisk / KernelSU 模块** `oppo_camera_port`（源码在 [`magisk/`](magisk/)） | 换掉只读分区上的文件：相机 APK、`meishe_lut`、`apk_resources` 滤镜资源、`unit.sdk.jar`、`libmsnativefilter.so` | Release 里的 `oppo_camera_port_reno17p.zip` |
 
 ### 安装顺序
 
@@ -148,7 +152,7 @@ return "common".equals(mode) || "portrait".equals(mode) || "night".equals(mode);
 
 ---
 
-## 三、胶片滤镜 / 实况调色盘（POP）
+## 三、胶片滤镜
 
 | 层 | 做了什么 |
 |---|---|
@@ -156,11 +160,9 @@ return "common".equals(mode) || "portrait".equals(mode) || "night".equals(mode);
 | 胶片 LUT | `/odm/etc/camera/meishe_lut`，路径**硬编码在 native** `libAlgoInterface.so`，Java 改不了 → 只能整目录 bind（135 个文件） |
 | Meishe 引擎 | 新版 Java 会给引擎设 `Custom LUT File Path` / `Custom LUT Factor`，原厂 `libmsnativefilter.so` 没有这两个 paramId（日志刷 `Invalid paramId`，滤镜静默失效）→ 换成 Reno 版（11.27 MB，带这两个参数），报错归零、琥珀真正生效 |
 | 滤镜组门控 | `FilterGroupManager` 32 个 `initXxxFilterGroup`，三层门控：静态字段 `sbXxxSupport` → 反射置 true；`isXxx()` → hook 成 true；`getConfigBooleanValue(key)` → 40 个 key 里挑 21 个强制放行。实测每组 3~23 个滤镜 |
-| 实况调色盘 / POP | 独立模式 `retro_camera_mode`（资源 `camera_mode_retro_camera` 的中文值就是 **"POP"**）。注册要两处：`camera_unit_config` 13~16 处 + `camera_unit_feature_config.protobuf` 追加 39 字节的 `retro_camera` feature（缺它会在 `RetroCameraPresenter.<init>` NPE 崩） |
-| POP 的 UI | `apk_resources/{img,json,mp4}`：retro 胶囊 Lottie 动画 + 引导图，整目录 bind |
 
-**注意**：`camera_unit_config` 不要整份换 Reno 的！Reno 版的人像传感器映射和本机对不上，
-**进人像模式会预览冻结**（连续两张截图 md5 相同、无 ANR）。必须用「设备原厂 + retro 补丁」那份。
+> `camera_unit_config` **保持设备原厂那份不动**。整份换成 Reno 的会让人像模式预览冻结
+> （连续两张截图 md5 相同、无 ANR）—— 这条线不碰配置层。
 
 ---
 
@@ -194,13 +196,11 @@ ClassLoader 当 parent 动态加载（`InMemoryDexClassLoader`）。
 
 ## 五、版本矩阵（混淆名会变，换版本必看）
 
-| | 7.006.121（本机原始） | 7.013.60（当前） | 7.016.29 |
+| | 7.006.121（本机原始） | 7.013.60 | 7.016.29（当前） |
 |---|---|---|---|
 | 预览取帧类（灵感构图） | `wb.r` / `rb.t`，方法 `f` | `tb.u` / `tb.d`，方法 `h` | `tb.q`，方法 `f` |
 | 取帧方法特征 | 11 参、含 2~3 个 `HardwareBuffer` | 同 | 同 |
 | 灵感 auth 类 | 混淆名 `pb.b` | 非混淆 `…aicomposition.inspiration.network.core.*` | 同 |
-| POP 参数面板 `enterPopProfessionalMode` | 无 | **无** | **有**（classes7.dex） |
-| 模式 id↔tag 映射类 `com.oplus.camera.v6` | 有 | 变成 IConsumer，不是映射表 | 有 |
 
 取帧类不写死名字：候选列表 `listOf("tb.u", "tb.q", "tb.d", "wb.r", "rb.t")`，
 按「11 个参数 + ≥2 个 `HardwareBuffer`」匹配，方法名叫什么都行。
@@ -212,11 +212,8 @@ ClassLoader 当 parent 动态加载（`InMemoryDexClassLoader`）。
 | 开关 | 作用 |
 |---|---|
 | `setprop persist.camunlock.palette.allmode 1` | 调色盘在所有模式可见（含大师） |
-| `setprop persist.camunlock.pop 1` | 把 `retro_camera_mode` 注入模式列表 |
-| `setprop persist.camunlock.pop.swap 1` | 兜底：v6 映射里把「大师」换成 POP（7.016 有效） |
 | `setprop persist.camunlock.filter.director 1` | 放行导演联名滤镜（姜文 / 贾樟柯） |
 | `setprop persist.camunlock.filter.{lively,festival,ceremony} 1` | 鲜活 / 节日 / 庆典（LUT 未随固件提供，默认关） |
-| `touch /data/adb/modules/oppo_camera_port/enable_retro` | 挂 retro 配置（实况调色盘 / POP 的配置层） |
 
 ---
 
@@ -226,7 +223,7 @@ ClassLoader 当 parent 动态加载（`InMemoryDexClassLoader`）。
 - `palette init code=0`（LUT 全部读成功）
 - 调色盘面板：影调 / 饱和度 / 滤镜强度 / 柔光 + 胶片样式（和光 / Portra 胶片 / 800T / CCD…），拖动实时生效，格子颜色正常
 - 大师模式调色盘：hook `isSupportPalette` 后可用
-- 人像模式：换回设备基底 `camera_unit_config` 后不再冻结（此前整份换 Reno 配置会冻结预览）
+- 人像模式：配置层用设备原厂 `camera_unit_config`，预览实时（连续两帧 md5 不同、无 ANR）
 - 琥珀 / 清透在滤镜列表里出现，选中后真实生效（`Invalid paramId` 归零）
 - 灵感构图入口出现，云端返回 `zoom=2.2 / center=[422,512]`，相机自动变焦并显示构图说明
 
@@ -265,96 +262,13 @@ CI（`.github/workflows/build.yml`）：
 
 ## 九、已知问题
 
-- **POP 模式没出现在模式条（未打通）**。已经查实的部分：
-  - `retro_camera_mode` 在 `camera_unit_config` 里注册了 16 处，SDK 的
-    `JsonParser.parseSupportedMode()` 解析结果里**也有**它（hook 日志可证），
-    甚至把它插到 `mode_type_list` 最前，模式条 5 格**纹丝不动**；
-  - Reno17p 自己的 5 个 config（`oplus_camera_config`（已解密）、
-    `oplus_camera_preview_decision_config.json`、`algo_switch_config`、
-    `preview_decision_params.json`、`aps_config`）里 **`retro` 出现 0 次**；
-  - 换 7.016.29（Reno17p 原版 APK，含 `enterPopProfessionalMode` 那 10 个方法）
-    后模式条仍是大屏「大师 / 视频 / 照片 / 人像」；
-  - 用 `com.oplus.camera.v6`（7.016 里的模式 id↔tag 映射表）做 master⇄retro 交换，
-    hook 装上了（`hooked=2`）但切模式时该方法不被调用；
-  - 探过 `com.oplus.camera.o6` / `ha.q0` / `CameraManager`，没有返回 5 个模式名的方法。
-
-  **2026-11-21 更新：模式条/「更多」的来源已经查清（POP 显示能打通，跑起来还差一层）**
-
-  1. **模式条不是 APK 写死**，是相机自己的数据库
-     `/data/user/0/com.oplus.camera/databases/mode_data.db`：
-
-     ```sql
-     CREATE TABLE mode_info(mode_name TEXT, mode_id INT, position TEXT, rank INT,
-                            support_edit TEXT, support_front TEXT);
-     ```
-
-     `position='position_headline'` 按 `rank` 排序就是那 5 格；`position='mode_panel'` 是「更多」面板。
-
-  2. **`mode_id` = `zp.j.e(zp.j.k(模式tag))`**。运行时 dump 出来的对照表：
-
-     | tag | resource id | **DB id** |
-     |---|---|---|
-     | retroCamera（POP） | 2131821668 | **42** |
-     | aiScenery（风光） | 2131821617 | 37 |
-     | masterVideo | 2131821667 | 36 |
-     | highPixel | 2131821441 | 31 |
-     | more | 2131821653 | 23 |
-     | portrait | 2131821665 | 22 |
-     | commonVideo | 2131821680 | 21 |
-     | common | 2131821626 | 20 |
-     | night | 2131821662 | 5 |
-     | professional | 2131821650 | 4 |
-
-     ⚠️ 直接拿 resource id（2131821668）去填 `mode_id` 会让相机启动就崩
-     （`Resources$NotFoundException: String resource ID #0x0`），必须是 `e()` 出来的小整数。
-
-  3. **能显示，但点进去会闪退** —— 所以现在**没有**把 POP 留在模式数据里
-     （`mode_data.db` 已回原厂 19 行）。原因见下面「POP 闪退全景：6 层」。
-     造库/换库工具：`_tools/make_pop_bar_db.py`、`_tools/dev/apply_safe_db.sh`。
-
-  4. **native 依赖**：换上了 Reno17p 的 `libBasicTonePhoto.so`（591,552 B）。
-     原厂那颗 `palette` 相关符号是 **0 个**，Reno 版有 **6 个** —— POP/调色盘走 BasicTone
-     时就是靠它。已进模块 `payload/lib64/`，`post-fs-data.sh` 里绑定。
-
-  **POP 闪退全景：6 层，已修 5 层（2026-11-21 逐层查清）**
-
-  | # | 卡点 | 证据 | 状态 |
-  |---|---|---|---|
-  | 1 | 模式工厂 `cm.x3.a("retroCamera")` 先查 `CameraConfig.getConfigBooleanValue("com.oplus.feature.retro.camera.support")`，false 就 `return null` | 切模式动画结束后 `CameraUIManager.qh` 里 `BaseMode.Vi()` NPE | **已修**：这个一参方法**不经过**三参 `d(...)`，必须单独 hook；修完 POP 模式类 `em.a2` 能正常 new |
-  | 2 | 模式拿到的 cameraId 是 Reno 的 **12**（`za.z0.B()` 就是 `return this.v;`），本机只枚举 0..5 | `CameraManager.E4(12)` → `cm.a4.i(12)` 返回 null → `lm.i.s(PreviewProcessor)` 里 `Objects.requireNonNull` NPE | **已修**：越界折回 0 + `E4` 取不到回落 |
-  | 3 | `za.s.b(logicId, modeName)` 用 `key = v6.c(modeName)+"_"+unit` 取 CameraDeviceInfo，retro 的 key 本机不存在 | 同一刻 `E4(0)` 也是 null；`za.s.b(12,retroCamera)` 返回 null | **已修**：只在 mode 含 retro 时回落 `(0,"common")`（照片模式那份，命中缓存） |
-  | 4 | unit.sdk 的 `ModeFactory.createMode` 只认 `photo_mode`/`retro_camera_mode`/`master_video_mode`…，不认 APK 的 tag | `IllegalArgumentException: illegal mode name when createMode!`（`CameraUnitControl` 线程） | **已修**：`getMode` 失败才翻译（全量 tag→mode 名） |
-  | 5 | `GLES20Canvas.k0`（反相遮罩 shader）只在 `CommonUtil.isSupportSquareScalableTorch()` 为 true 时创建，`r0(RectF,…)` 却无条件 `k0.s()` | `NullPointerException: gl.x0.s()`（`PreviewGLThread`） | **已修**：`r0` 入口发现 k0 为空就按同两个 shader 资源补建 |
-  | 5b | `Lut3dDataManager.e` 把长度异常的 `[I` 传给 `CombineLutHelper.process` | native `SIGSEGV`，栈顶 `libCombineLutJni.processV3` → memcpy | **已修**：retro 模式让 `e()` 返回 false，跳过 CombineLut |
-  | 6 | POP 自绘 View 为 null | `NullPointerException: void yi.b0.l(int)`，`cj.i.run` ← `ScheduledRunnable`（`yi.b0 extends View`，带 Paint/LinearGradient/ValueAnimator） | **未修**，下一步 |
-
-  修到第 6 层时 hook 日志（说明前 5 层真的过了）：
-
-  ```
-  gl.k0 为空 → 已补建反相遮罩 shader（2131755311 / 2131755080）
-  Lut3dDataManager.e 跳过（mode=retroCamera/retroCamera, l.size=1）
-  ModeFactory.getMode(masterVideo) 非法 → master_video_mode
-  za.s.b(12,retroCamera)=null → 回落 (0,common) → za.i1
-  ```
-
-  **POP 的效果配置在 /odm 且不能简单 bind**：`libAlgoInterface.so` 里硬编码
-  `/odm/etc/camera/basictone/setting_Retro`（还有 `retro_filter_intensity` /
-  `retro_fish_eye_enable` / `retroFilterLightflowTimeStep`），本机原厂 basictone 没有这个目录。
-  实测把 `basictone` 整目录 bind 成「原厂副本 + setting_Retro」后**照片模式 native 崩**
-  （`SIGSEGV addr=0x20`，`libCombineLutJni.processV3` ← `Lut3dDataManager.e`，LUT 数组长度变 1）。
-  所以 setting_Retro 只能用 **overlayfs**（lowerdir=原厂，upperdir 只放 setting_Retro），
-  或者整份 basictone 对齐后取消 app 层 palette 重定向再重新验证人像/调色盘。
-
-  只要「胶片效果」的话，`FilterGroupManager.initRetroCameraFilterGroup()` 能无条件填 9 支 retro 滤镜
-  （模块已主动调用），把胶片挂到现有模式即可，不需要 retro 模式本身。
-
-  完整证据链：`CameraUnlock/_tools/dev/POP_CRASH_ROOTCAUSE.md`。
-  分析用的自研工具链：`_tools/dexdesc.py`、`_tools/dexkit.py`、`_tools/dexcls.py`、
-  `_tools/dexat.py`、`_tools/dexstrs.py`、`_tools/dumpclass.ps1`
-  （自动挑 dex → 设备 dexdump → 只拉目标类片段）。
+- **本分支不含 POP / 实况调色盘**。`retro_camera_mode` 相关的 hook（模式工厂门、cameraId 折回、
+  `za.s.b` 回落、`Lut3dDataManager.e` guard、GL 反相遮罩 shader、retro 自绘 View）、
+  `RETRO_KEYS` 强制放行、`camera_unit_config` / protobuf 的 retro 补丁、`basictone/setting_Retro`
+  都已从这条线里摘掉；模式条和配置层保持设备原厂状态。
+  那套试验代码在 `main` 与 `backup/pop-wip-20261121` 分支，需要时再取。
 - **鲜活 / 节日 / 庆典**：LUT（`vibe/festival/ceremony.rgba.bin`）在两台机器固件里都不存在，
   所以做成开关、默认关，开了只多出条目不会有效果。
-- **7.013.60 没有 POP 参数面板**（`enterPopProfessionalMode` 只在 7.016.29 里）。
 - **分析 APK 一定要用设备上装的那份**：`/data/app/…/base.apk`（7.016.29，
   md5 `fbb77302d89dc710a2d28095fe5b2fa1`）。仓库 `payload` 里一度放过另一份同名构建，
   dex 全不同（连 `zp/j` 都没有），拿它逆会得出完全错误的结论。

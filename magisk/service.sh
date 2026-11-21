@@ -13,15 +13,7 @@ for name in meishe_lut; do
   mount --bind "$src" "$dst" && echo "palette_port(service): bind $name ok"
 done
 
-if [ -f "$MODDIR/enable_retro" ] && [ -f "$PAYLOAD/config/camera_unit_config" ]; then
-  dst="$CAM/config/camera_unit_config"
-  if ! mount | grep -q " $dst "; then
-    chcon u:object_r:vendor_configs_file:s0 "$PAYLOAD/config/camera_unit_config" 2>/dev/null
-    mount --bind "$PAYLOAD/config/camera_unit_config" "$dst" && echo "palette_port(service): retro config armed"
-  fi
-fi
-
-# 相机 APK：POP / 鱼眼 / 实况调色盘的 UI 代码只在 7.016.29 这一版里有。
+# 相机 APK：调色盘 / 胶片那套 UI 与 unit.sdk 只在 7.016.29 这一版里对得上。
 # 只要模块里放了 payload/apk/OplusCamera.apk，且机上版本不是这个号，就开机补装一次。
 # 装成 data app 更新，/product/app 里的原厂包不动，随时 pm uninstall 回滚。
 APK="$PAYLOAD/apk/OplusCamera.apk"

@@ -1,4 +1,4 @@
-# OPPO 相机 调色盘 / 胶片 / POP 移植模块
+# OPPO 相机 调色盘 / 胶片 移植模块
 
 > ⚠️ **仅在 OPPO X9（`PLJ110`，ColorOS 17 / Android 17）上测试可用。**
 > 其他机型没有验证过，挂载路径、SELinux 标签、相机版本都可能不同，**刷之前先备份，出问题直接删模块重启即可回滚**。
@@ -11,13 +11,15 @@
 
 | payload | 目标 | 说明 |
 |---|---|---|
-| `payload/apk/OplusCamera.apk` | 补装成 data app | 相机 7.013.60（`version.txt` 里写目标版本）。开机等 `sys.boot_completed` 后比对版本，不一致就 `pm install -r -d -g` |
-| `payload/meishe_lut/`（135 个） | `/odm/etc/camera/meishe_lut` | 胶片 / 实况 LUT（`.MS-LUT` + RGBA 图层）。含琥珀 `hu_po.bin`、清透 `qing_tou.bin`、portra400 / positive / ccd / polaroid / gt-* |
-| `payload/config/camera_unit_config` | `/odm/etc/camera/config/camera_unit_config` | **设备原厂配置 + 16 处 retro 补丁**（不要整份换 Reno 的，人像模式会卡死） |
-| `payload/config/camera_unit_feature_config.protobuf` | 同目录 | 设备原版 + 追加 39 字节 `retro_camera` feature |
-| `payload/apk_resources/` | `/odm/etc/camera/apk_resources` | retro 胶囊 Lottie + 引导图（img/json/mp4） |
+| `payload/apk/OplusCamera.apk` | 补装成 data app | 相机 7.016.29（`version.txt` 里写目标版本）。开机等 `sys.boot_completed` 后比对版本，不一致就 `pm install -r -d -g` |
+| `payload/meishe_lut/`（135 个） | `/odm/etc/camera/meishe_lut` | 胶片 LUT（`.MS-LUT` + RGBA 图层）。含琥珀 `hu_po.bin`、清透 `qing_tou.bin`、portra400 / positive / ccd / polaroid / gt-* |
+| `payload/apk_resources/` | `/odm/etc/camera/apk_resources` | 滤镜资源（原厂 95 → 135 个 LUT，纯增量） |
 | `payload/framework/` | `/product/framework` | `com.oplus.camera.unit.sdk.jar`＋oat（滤镜清单：琥珀/清透） |
 | `payload/lib64/libmsnativefilter.so` | `/odm/lib64/` | 带 `Custom LUT` 参数的 Meishe 引擎（原厂的没有，会刷 `Invalid paramId`） |
+| `payload/lib64/libBasicTonePhoto.so` | `/odm/lib64/` | Reno 版带 6 个 palette 相关符号（原厂 0 个），调色盘走 BasicTone 时用 |
+
+> 配置层（`/odm/etc/camera/config/camera_unit_config`、`camera_unit_feature_config.protobuf`）
+> **这一版不再替换**，保持设备原厂文件。retro/POP 的配置补丁属于试验分支，不在这条发布线里。
 
 ## 为什么是 bind 挂载，而不是 Magisk 的 system/ 覆盖
 

@@ -40,9 +40,10 @@ class CameraPaletteModule : XposedModule() {
         /**
          * 提取包版本：assets/basictone 的 palette/ 换成了 Reno 17 Pro 的
          * /odm/etc/camera/basictone/palette（18 个 SC16，其中 8 个与 X10 那版不同）。
-         * 改这个字符串会让相机侧的缓存整包重铺。
+         * 改这个字符串会让相机侧的缓存整包重铺 —— 从 1.1.0 回退到 1.0.0 是为了
+         * 让装过 POP 那版的机器把 assets 里已删掉的 setting_Retro/ 一起清掉。
          */
-        private const val EXTRACT = "reno17p-1.1.0"
+        private const val EXTRACT = "reno17p-1.0.0"
         private const val ASSET_ROOT = "assets/basictone/"
 
         /** 调色盘 */
@@ -52,34 +53,12 @@ class CameraPaletteModule : XposedModule() {
         private const val FILTER_GROUPS =
             "com.oplus.ocs.camera.ipusdk.processunit.filter.list.FilterGroupManager"
 
-        /** unit.sdk 里解析 camera_unit_config 的类（mode_type_list 由它读） */
-        private const val JSON_PARSER = "com.oplus.ocs.camera.configure.JsonParser"
-
-        /** POP 模式的模式名（资源 camera_mode_retro_camera 的中文值就是 "POP"） */
-        private const val POP_MODE = "retro_camera_mode"
-
-        /** 本机 cameraId 有效范围（camera_unit_config 的 camera_id_list 是 0..5） */
-        private const val MAX_CAMERA_ID = 5
-
-        /** 模式 id ↔ tag 的映射类（master / retroCamera / commonVideo …都在这张表里） */
-        private const val MODE_MAP_CLS = "com.oplus.camera.v6"
-
         /** 工具类：isSupportPalette(mode) 决定哪些模式有调色盘入口 */
         private const val COMMON_UTIL = "com.oplus.camera.common.utils.CommonUtil"
 
         /** unit.sdk 里读加密配置的入口（getConfigString 用 JNI 解密） */
         private const val UPDATE_HELPER =
             "com.oplus.ocs.camera.consumer.apsAdapter.update.UpdateHelper"
-
-        /** 临时诊断：探测模式条构建类（默认关；要查 POP 入口时改 true） */
-        private const val TRACE_MODE_BUILDERS = false
-
-        /** 同时含 masterVideo + retroCamera 常量的候选类 */
-        private val MODE_PROBE_CLASSES = listOf(
-            "com.oplus.camera.o6",
-            "ha.q0",
-            "com.oplus.camera.CameraManager"
-        )
 
         /** 滤镜组对象（addFrontAndBack 在这里，用来卡 鲜活/节日/庆典） */
         private const val FILTER_GROUP =
@@ -160,22 +139,7 @@ class CameraPaletteModule : XposedModule() {
             "aicomposition"
         )
 
-        /**
-         * 复古相机（= POP 模式）与鱼眼相关 key。
-         * 7.016 装上来之后这些代码都齐了，缺的只是机型的项目配置。
-         * 鱼眼是 retro 里的一个开关：filter.fisheye.enable / fisheye.enable。
-         */
-        private val RETRO_KEYS = listOf(
-            "com.oplus.feature.retro.camera.support",
-            "com.oplus.feature.retro.camera.livephoto.default.open",
-            "com.oplus.camera.feature.retro_camera",
-            "com.oplus.camera.retro.filter.fisheye.enable",
-            "com.oplus.camera.retro.fisheye.enable",
-            "com.oplus.camera.retro.filter.soft.enable",
-            "com.oplus.retro.camera.max.zoom.value"
-        )
-
-        private val FORCED = AI_KEYS + KEY_PALETTE + RETRO_KEYS
+        private val FORCED = AI_KEYS + KEY_PALETTE
 
         /**
          * 补进特性表的只有一个：相机里 feature 名的命名空间是 com.oplus.camera.feature.*，
@@ -188,14 +152,6 @@ class CameraPaletteModule : XposedModule() {
 
         /** 临时：跟踪「灵感推荐」这条链路的鉴权/网络，看它卡在哪一步。 */
         private const val TRACE_INSPIRATION = true
-
-        /**
-         * 临时：POP 进模式后预览崩在
-         *   lm.i.s(PreviewProcessor) → Objects.requireNonNull(v9)
-         *   v9 = u6.E4(cameraId)，即「按 cameraId 拿设备适配器」返回了 null。
-         * 打开后打印 cameraId 和 E4 的结果，判断是 id 不对还是适配器没建。
-         */
-        private const val TRACE_PREVIEW = false
 
         private val INSPIRATION_CLASSES = listOf(
             "com.oplus.camera.feature.aicomposition.inspiration.account.AICompositionAccountManager",
@@ -229,8 +185,6 @@ class CameraPaletteModule : XposedModule() {
 
     @Volatile private var deployed = false
 
-    /** 当前模式 tag（"common" / "retroCamera" …），由 fm.k.i hook 维护 */
-    @Volatile private var currentModeTag: String = "common"
     @Volatile private var settingPath: String? = null
     @Volatile private var palettePath: String? = null
     @Volatile private var odtPath: String? = null
@@ -245,21 +199,10 @@ class CameraPaletteModule : XposedModule() {
         runCatching { hookInit(cl, COMBINE_SDK) }.onFailure { log("hookInitSdk: $it") }
         runCatching { hookPaletteColors(cl) }.onFailure { log("hookPaletteColors: $it") }
         runCatching { hookFilterGroups(cl) }.onFailure { log("hookFilterGroups: $it") }
-        runCatching { hookModeList(cl) }.onFailure { log("hookModeList: $it") }
-        runCatching { hookModeSwap(cl) }.onFailure { log("hookModeSwap: $it") }
         runCatching { hookPaletteGate(cl) }.onFailure { log("hookPaletteGate: $it") }
         runCatching { hookConfigDecrypt(cl) }.onFailure { log("hookConfigDecrypt: $it") }
-        if (TRACE_MODE_BUILDERS) runCatching { probeModeBuilders(cl) }.onFailure { log("probeModeBuilders: $it") }
-        runCatching { dumpModeIds(cl) }.onFailure { log("dumpModeIds: $it") }
         runCatching { hookComposition(cl) }.onFailure { log("hookComposition: $it") }
-        runCatching { hookAdapterIdFallback(cl) }.onFailure { log("hookAdapterIdFallback: $it") }
-        runCatching { hookCameraIdRemap(cl) }.onFailure { log("hookCameraIdRemap: $it") }
-        runCatching { hookCameraInfoFallback(cl) }.onFailure { log("hookCameraInfoFallback: $it") }
         runCatching { hookProducerModeName(cl) }.onFailure { log("hookProducerModeName: $it") }
-        runCatching { hookCurrentMode(cl) }.onFailure { log("hookCurrentMode: $it") }
-        runCatching { hookLutGuard(cl) }.onFailure { log("hookLutGuard: $it") }
-        runCatching { hookGlMaskShader(cl) }.onFailure { log("hookGlMaskShader: $it") }
-        if (TRACE_PREVIEW) runCatching { tracePreview(cl) }.onFailure { log("tracePreview: $it") }
         if (TRACE_INSPIRATION) runCatching { traceInspiration(cl) }.onFailure { log("traceInspiration: $it") }
 
         log("ready · api=${getApiVersion()} · pid=${android.os.Process.myPid()}")
@@ -274,13 +217,10 @@ class CameraPaletteModule : XposedModule() {
             return
         }
         // 两个入口都要挂：
-        //   d(String, boolean, boolean)      —— 老三参版本，调色盘/构图走这里
-        //   getConfigBooleanValue(String)    —— 只查缓存表 + 原始字符串，
-        //                                        内部【不经过 d】！POP 模式的工厂
-        //                                        cm.x3.a("retroCamera") 就是用它判
-        //                                        com.oplus.feature.retro.camera.support，
-        //                                        不挂这个则模式实例为 null → 切模式
-        //                                        动画结束后 CameraUIManager.qh NPE。
+        //   d(String, boolean, boolean)      —— 老三参版本，调色盘 / 构图走这里
+        //   getConfigBooleanValue(String)    —— 内部不经过 d()，自己查缓存表再 parse 原始字符串，
+        //                                        相机里另有一批门控直接走这个一参版本，
+        //                                        所以白名单要在这两个入口上各放行一次。
         var n = 0
         cls.declaredMethods.forEach { m ->
             val keyArg = m.parameterTypes.firstOrNull() == String::class.java
@@ -301,171 +241,28 @@ class CameraPaletteModule : XposedModule() {
 
     /**
      * 需要无条件放行的配置 key。
-     *
-     * 「retro」这一族是 POP（实况调色盘）模式的唯一门控：模式工厂
-     * `cm.x3.a(String)` 里
-     *
-     *     if ("retroCamera".equals(name)) {
-     *         if (!CameraConfig.getConfigBooleanValue("com.oplus.feature.retro.camera.support"))
-     *             return null;                       // ← 本机配置里没这条，返回 null
-     *         return new Lem.a2(...);                // ← 真正的 POP 模式类
-     *     }
-     *
-     * 所以 key 里带 retro 的一律放行；滤镜那批 key（FILTER_KEYS）本来也预期为 true。
+     * 滤镜那批 key（FILTER_KEYS）本来也预期为 true。
      */
     private fun forcedKey(key: String): Boolean {
         if (key == KEY_PALETTE) return true
         val lower = key.lowercase()
         if (lower.contains("aicomposition") || lower.contains("ai_composition")) return true
-        if (lower.contains("retro")) return true
         return FORCED.contains(key) || FILTER_KEYS.contains(key)
-    }
-
-    /**
-     * POP 模式的 cameraId 是 Reno17p 的编号（实测 12），本机只枚举到 0..5，
-     * 于是 `CameraManager.E4(id)` → `cm.a4.i(id)` 返回 null，PreviewProcessor 拿空适配器崩。
-     *
-     * 兜底：拿不到就走主摄（cameraId 0）。只在返回 null 时才回落，正常模式零影响。
-     */
-    private fun hookAdapterIdFallback(cl: ClassLoader) {
-        val cls = runCatching { cl.loadClass("com.oplus.camera.CameraManager") }.getOrNull()
-        if (cls == null) {
-            log("WARN: com.oplus.camera.CameraManager not found")
-            return
-        }
-        val m = cls.declaredMethods.firstOrNull {
-            it.name == "E4" && it.parameterTypes.size == 1 && it.parameterTypes[0] == java.lang.Integer.TYPE
-        }
-        if (m == null) {
-            log("WARN: CameraManager.E4(I) not found")
-            return
-        }
-        hook(m).intercept { chain ->
-            val id = chain.args.getOrNull(0) as? Int ?: return@intercept chain.proceed()
-            val r: Any? = chain.proceed()
-            if (r != null) return@intercept r
-            val args = chain.args.toMutableList()
-            args[0] = 0
-            val fb = runCatching { chain.proceed(args.toTypedArray()) as Any? }.getOrNull()
-            logOnce("E4($id)=null → 回落 cameraId 0 (" + (fb?.javaClass?.name ?: "null") + ")")
-            fb
-        }
-        log("CameraManager.E4 已挂（无效 cameraId 回落 0）")
-    }
-
-    /**
-     * POP 模式的 cameraId 落在 Reno17p 的编号上（实测 `za.z0.B()` = 12），
-     * 本机只枚举到 0..5，于是 `CameraManager.E4(12)` → `cm.a4.i(12)` 返回 null，
-     * PreviewProcessor 拿空适配器崩在 Objects.requireNonNull。
-     *
-     * `za.z0.B()` 原文就是 `return this.v;`，这里把越界的 id 折回主摄 0，
-     * 让 retro 模式走本机真实存在的摄像头。只改越界值，正常模式不受影响。
-     */
-    private fun hookCameraIdRemap(cl: ClassLoader) {
-        val cls = runCatching { cl.loadClass("za.z0") }.getOrNull()
-        if (cls == null) {
-            log("WARN: za.z0 not found")
-            return
-        }
-        val m = cls.declaredMethods.firstOrNull {
-            it.name == "B" && it.parameterTypes.isEmpty() && it.returnType == java.lang.Integer.TYPE
-        }
-        if (m == null) {
-            log("WARN: za.z0.B()I not found")
-            return
-        }
-        hook(m).intercept { chain ->
-            val id = chain.proceed() as? Int ?: return@intercept chain.proceed()
-            if (id in 0..MAX_CAMERA_ID) return@intercept id
-            logOnce("cameraId $id 越界 → 0")
-            0
-        }
-        log("za.z0.B() 已挂（越界 cameraId 折回 0）")
-    }
-
-    /**
-     * POP 真正卡住的地方（dexdump 原文）：
-     *
-     *     // cm.a4.i(int)
-     *     String name = this.a.i();                    // cm.j5.i() = 当前模式 tag
-     *     if (name == null) name = this.C0.l();        // fm.k.l()
-     *     return za.s.b(id, name);
-     *
-     *     // za.s.b(int logicId, String modeName)
-     *     unit = za.s.c(logicId);                      // logicId → 单元名（rear_main / rear_sat …）
-     *     if (unit == null) unit = "rear_main";
-     *     key  = com.oplus.camera.v6.c(modeName) + "_" + unit;   // 例如 photo_rear_main
-     *     info = za.s.g.get(key);                                  // 静态 HashMap 缓存
-     *     if (info == null) info = CameraUnitClient.getCameraDeviceInfo(...);
-     *     return info;                                 // ← retro 组合本机不存在 → null
-     *
-     * 也就是说：retro 模式下 modeName="retroCamera" 算出来的 key（如 `retro_rear_main`）
-     * 在本机这台机型的 CameraDeviceInfo 里没有，于是返回 null，
-     * PreviewProcessor 拿空适配器 NPE。
-     *
-     * 兜底：拿不到就按「照片模式」（logicId=0, modeName="common"）再要一次 ——
-     * 那份 CameraDeviceInfo 是启动时就建好并缓存在 za.s.g 里的，一定命中。
-     * 开关：persist.camunlock.retro.caminfo，默认开；失败不影响其它模式。
-     */
-    private fun hookCameraInfoFallback(cl: ClassLoader) {
-        val cls = runCatching { cl.loadClass("za.s") }.getOrNull()
-        if (cls == null) {
-            log("WARN: za.s not found")
-            return
-        }
-        val m = cls.declaredMethods.firstOrNull {
-            it.name == "b" && it.parameterTypes.size == 2 &&
-                it.parameterTypes[0] == java.lang.Integer.TYPE &&
-                it.parameterTypes[1] == String::class.java
-        }
-        if (m == null) {
-            log("WARN: za.s.b(I,String) not found")
-            return
-        }
-        hook(m).intercept { chain ->
-            val r: Any? = chain.proceed()
-            if (r != null) return@intercept r
-            // 只在 retro 这条链上兜底：正常模式的 null 可能表示「还没建好」，
-            // 强行换成照片模式的 info 会让相机以为没相机而退出（踩过）。
-            val mode = chain.args.getOrNull(1) as? String
-            if (mode == null || !mode.contains("retro", true)) return@intercept r
-            if (!retroCameraInfoFallback()) return@intercept r
-            val id = chain.args.getOrNull(0) as? Int
-            val args = chain.args.toMutableList()
-            args[0] = 0
-            args[1] = "common"
-            val fb: Any? = runCatching { chain.proceed(args.toTypedArray()) as Any? }.getOrNull()
-            logOnce("za.s.b($id,$mode)=null → 回落 (0,common) → " + (fb?.javaClass?.name ?: "null"))
-            fb
-        }
-        log("za.s.b 已挂（拿不到 CameraDeviceInfo 就回落到照片模式）")
-    }
-
-    private fun retroCameraInfoFallback(): Boolean = synchronized(switchCache) {
-        switchCache.getOrPut("retrocaminfo") {
-            runCatching {
-                val c = Class.forName("android.os.SystemProperties")
-                val g = c.getMethod("getBoolean", String::class.java, java.lang.Boolean.TYPE)
-                g.invoke(null, "persist.camunlock.retro.caminfo", true) as Boolean
-            }.getOrDefault(true)
-        }
     }
 
     /**
      * APS（unit.sdk）侧的 ModeFactory 只认「配置里的模式名」，APK 侧传过来的却是「tag」。
      *
-     * `ModeFactory.createMode(String)` 的字符串常量里有 **retro_camera_mode**（还有
-     * photo_mode / video_mode / portrait_mode …共 41 个），但没有 `retroCamera`，
-     * 所以 retro 模式配置相机设备时抛：
+     * `ModeFactory.createMode(String)` 的字符串常量是 photo_mode / video_mode /
+     * portrait_mode / master_video_mode …（41 个），没有 APK 侧那套
+     * `common` / `commonVideo` / `masterVideo` 的 tag，于是抛：
      *
      *     java.lang.IllegalArgumentException: illegal mode name when createMode!
      *         at com.oplus.ocs.camera.producer.mode.ModeFactory.getMode(ModeFactory.java:29)
      *         at com.oplus.ocs.camera.producer.ProducerImpl.configure(ProducerImpl.java:187)
      *
-     * 也就是说 unit.sdk 完整支持 retro，只是命名空间不同：
-     *     APK 层 tag      : retroCamera
-     *     unit.sdk mode 名: retro_camera_mode
-     * 这里只在这一个边界上翻译，别的名字原样透传。
+     * 实测 `masterVideo` 会被直接传进来（大师录像），所以这里在最外层做一次
+     * tag → unit.sdk 模式名的翻译；原名字能建出来就原样透传，不重试。
      */
     private fun hookProducerModeName(cl: ClassLoader) {
         val cls = runCatching {
@@ -503,13 +300,11 @@ class CameraPaletteModule : XposedModule() {
      * APK 的 tag → unit.sdk 的模式名。
      *
      * `ModeFactory.createMode` 里的字符串常量是 `photo_mode` / `video_mode` /
-     * `retro_camera_mode` / `master_video_mode` …（41 个），没有 APK 侧那套
-     * `common` / `commonVideo` / `retroCamera` / `masterVideo` 的 tag。
-     * 实测中 `masterVideo` 和 `retroCamera` 都会被直接传进来，所以这张表按
-     * `mode_data.db` 里的 tag 全量对齐，避免下次换个模式又炸。
+     * `master_video_mode` …（41 个），没有 APK 侧那套 `common` / `commonVideo` /
+     * `masterVideo` 的 tag。这张表按 `mode_data.db` 里的 tag 全量对齐，
+     * 避免换个模式又炸。
      */
     private fun sdkModeName(tag: String?): String? = when (tag) {
-        "retroCamera" -> "retro_camera_mode"
         "masterVideo" -> "master_video_mode"
         "highPixel" -> "high_pixel_mode"
         "aiScenery" -> "ai_scenery_mode"
@@ -532,219 +327,6 @@ class CameraPaletteModule : XposedModule() {
         "xpan" -> "xpan_mode"
         "vibe" -> "vibe_mode"
         else -> null
-    }
-
-    /**
-     * 记录当前模式 tag。`fm.k.i(String tag, int, int, boolean, boolean)` 是真正的切换入口。
-     * `cm.x3.a` 只在首次创建模式时调用（之后走 HashMap 缓存），拿它记模式会一直停在旧值。
-     */
-    private fun hookCurrentMode(cl: ClassLoader) {
-        val cls = runCatching { cl.loadClass("fm.k") }.getOrNull()
-        if (cls == null) {
-            log("WARN: fm.k not found")
-            return
-        }
-        val m = cls.declaredMethods.firstOrNull {
-            it.name == "i" && it.parameterTypes.size == 5 &&
-                it.parameterTypes[0] == String::class.java
-        }
-        if (m == null) {
-            log("WARN: fm.k.i(String,...) not found")
-            return
-        }
-        hook(m).intercept { chain ->
-            (chain.args.getOrNull(0) as? String)?.let {
-                if (it.isNotEmpty()) currentModeTag = it
-            }
-            chain.proceed()
-        }
-        log("fm.k.i 已挂（记录当前模式 tag）")
-    }
-
-    /**
-     * POP 模式下 `Lut3dDataManager.e(int,int,String)` 会把 `null`（或尺寸不对）的
-     * `[I` 传给 `CombineLutHelper.process`，native `libCombineLutJni.processV3`
-     * 里 memcpy 直接段错误（tombstone 栈：libc __memcpy_aarch64_simd ←
-     * libCombineLutJni.processV3 ← CombineLutHelper.process ← Lut3dDataManager.e
-     * ← PreviewRenderer）。
-     *
-     * 这里在 retro 模式下让 `e()` 直接返回 false（= 本轮不更新 LUT），
-     * 预览退回不带 3D LUT 的直通路径，先保证模式本身可用。
-     * 开关：persist.camunlock.retro.lutguard，默认开。
-     */
-    private fun hookLutGuard(cl: ClassLoader) {
-        val cls = runCatching {
-            cl.loadClass("com.oplus.camera.common.utils.Lut3dDataManager")
-        }.getOrNull()
-        if (cls == null) {
-            log("WARN: Lut3dDataManager not found")
-            return
-        }
-        val m = cls.declaredMethods.firstOrNull {
-            it.name == "e" && it.parameterTypes.size == 3 &&
-                it.parameterTypes[0] == java.lang.Integer.TYPE &&
-                it.parameterTypes[1] == java.lang.Integer.TYPE &&
-                it.parameterTypes[2] == String::class.java
-        }
-        if (m == null) {
-            log("WARN: Lut3dDataManager.e(II,String) not found")
-            return
-        }
-        val fL = runCatching { cls.getDeclaredField("l").apply { isAccessible = true } }.getOrNull()
-        hook(m).intercept { chain ->
-            // 第三参就是模式名（dexdump 里和 "vibe" 比的那一个），比全局变量可靠：
-            // 启动恢复模式时不一定经过 fm.k.i。
-            val argMode = chain.args.getOrNull(2) as? String
-            val isRetro = isRetroName(argMode) || isRetroName(currentModeTag)
-            if (!retroLutGuard() || !isRetro) return@intercept chain.proceed()
-            val n = runCatching { (fL?.get(chain.thisObject) as? IntArray)?.size }.getOrNull()
-            logOnce("Lut3dDataManager.e 跳过（mode=$argMode/$currentModeTag, l.size=$n）")
-            false
-        }
-        log("Lut3dDataManager.e 已挂（retro 模式跳过 CombineLut）")
-    }
-
-    private fun isRetroName(s: String?): Boolean =
-        s != null && (s.contains("retro", true) || s.contains("RetroCamera", false))
-
-    private fun retroLutGuard(): Boolean = synchronized(switchCache) {
-        switchCache.getOrPut("retrolutguard") {
-            runCatching {
-                val c = Class.forName("android.os.SystemProperties")
-                val g = c.getMethod("getBoolean", String::class.java, java.lang.Boolean.TYPE)
-                g.invoke(null, "persist.camunlock.retro.lutguard", true) as Boolean
-            }.getOrDefault(true)
-        }
-    }
-
-    /**
-     * POP 进模式后崩在 GL 线程：
-     *
-     *     NullPointerException: com.oplus.camera.common.gl.x0.s() on a null object reference
-     *         at com.oplus.camera.common.gl.o.r0(GLES20Canvas.java:120)
-     *         at dq.i1.vh(CameraPreviewUI.java:628)
-     *         at ln.l.a1(PreviewRenderer.java:329)
-     *
-     * `GLES20Canvas.<init>` 里 `k0` 是**有条件**创建的（dexdump 原文）：
-     *
-     *     k0 = null;
-     *     ...
-     *     if (CommonUtil.isSupportSquareScalableTorch()) {
-     *         k0 = new x0(R.raw.texture_vertex_shader_inverse_mask,
-     *                     R.raw.draw_inverse_mask_shader);       // 反相遮罩 shader
-     *     }
-     *
-     * 而绘制路径 `r0(RectF, float, float[], float, float)` 无条件 `k0.s()`。
-     * 本机 `isSupportSquareScalableTorch()` 为 false → k0 为 null → POP 的预览
-     * 特效/遮罩一走这条路就崩（照片模式不画遮罩，所以平时看不到）。
-     *
-     * 不去改那个能力判断（会影响手电筒 UI），只在 `r0` 入口发现 k0 为空时
-     * 按同样的两个 shader 资源补建一份。开关：persist.camunlock.gl.mask，默认开。
-     */
-    private fun hookGlMaskShader(cl: ClassLoader) {
-        val oCls = runCatching { cl.loadClass("com.oplus.camera.common.gl.o") }.getOrNull()
-        val x0Cls = runCatching { cl.loadClass("com.oplus.camera.common.gl.x0") }.getOrNull()
-        val rCls = runCatching { cl.loadClass("com.oplus.camera.common.R\$raw") }.getOrNull()
-        if (oCls == null || x0Cls == null || rCls == null) {
-            log("WARN: gl.o / gl.x0 / R\$raw 不全，跳过遮罩 shader 补建")
-            return
-        }
-        val vs = runCatching { rCls.getField("texture_vertex_shader_inverse_mask").getInt(null) }.getOrNull()
-        val fs = runCatching { rCls.getField("draw_inverse_mask_shader").getInt(null) }.getOrNull()
-        val ctor = runCatching {
-            x0Cls.getConstructor(java.lang.Integer.TYPE, java.lang.Integer.TYPE)
-        }.getOrNull()
-        val k0 = runCatching { oCls.getDeclaredField("k0").apply { isAccessible = true } }.getOrNull()
-        if (vs == null || fs == null || ctor == null || k0 == null) {
-            log("WARN: 遮罩 shader 资源/构造/字段缺失 vs=$vs fs=$fs ctor=$ctor k0=$k0")
-            return
-        }
-        val m = oCls.declaredMethods.firstOrNull {
-            it.name == "r0" && it.parameterTypes.size == 4 &&
-                it.parameterTypes[0] == android.graphics.RectF::class.java
-        }
-        if (m == null) {
-            log("WARN: gl.o.r0(RectF,...) not found")
-            return
-        }
-        hook(m).intercept { chain ->
-            if (glMaskEnabled()) {
-                runCatching {
-                    if (k0.get(chain.thisObject) == null) {
-                        k0.set(chain.thisObject, ctor.newInstance(vs, fs))
-                        logOnce("gl.k0 为空 → 已补建反相遮罩 shader（$vs / $fs）")
-                    }
-                }.onFailure { log("gl.k0 补建失败: $it") }
-            }
-            chain.proceed()
-        }
-        log("GLES20Canvas.r0 已挂（k0 遮罩 shader 兜底）")
-    }
-
-    private fun glMaskEnabled(): Boolean = synchronized(switchCache) {
-        switchCache.getOrPut("glmask") {
-            runCatching {
-                val c = Class.forName("android.os.SystemProperties")
-                val g = c.getMethod("getBoolean", String::class.java, java.lang.Boolean.TYPE)
-                g.invoke(null, "persist.camunlock.gl.mask", true) as Boolean
-            }.getOrDefault(true)
-        }
-    }
-
-    /**
-     * 诊断：`lm.i`（PreviewProcessor）的 `s(boolean)` 用
-     *
-     *     za.i1 dev = this.A.E4(this.C.B());     // 当前模式的 cameraId → 设备适配器
-     *     Objects.requireNonNull(dev);           // ← POP 模式下这里 NPE
-     *
-     * 打印 cameraId 和 E4 的返回，判断是 id 不合法还是适配器没建出来。
-     */
-    private fun tracePreview(cl: ClassLoader) {
-        val cls = runCatching { cl.loadClass("lm.i") }.getOrNull()
-        if (cls == null) {
-            log("WARN: lm.i not found")
-            return
-        }
-        val m = cls.declaredMethods.firstOrNull {
-            it.name == "s" && it.parameterTypes.size == 1 &&
-                it.parameterTypes[0] == java.lang.Boolean.TYPE
-        }
-        if (m == null) {
-            log("WARN: lm.i.s(Z) not found")
-            return
-        }
-        val fC = runCatching { cls.getDeclaredField("C").apply { isAccessible = true } }.getOrNull()
-        val fA = runCatching { cls.getDeclaredField("A").apply { isAccessible = true } }.getOrNull()
-        hook(m).intercept { chain ->
-            logOnce("preview: s() 进入")
-            runCatching {
-                val self = chain.thisObject
-                val ids = ArrayList<String>()
-                ids.add("self=" + (self?.javaClass?.name ?: "null"))
-                fC?.get(self)?.let { x ->
-                    val b = x.javaClass.methods.firstOrNull { it.name == "B" && it.parameterTypes.isEmpty() }
-                    ids.add("C=" + x.javaClass.name + " B=" + (b?.invoke(x)?.toString() ?: "?"))
-                }
-                val svc = fA?.get(self)
-                ids.add("svc=" + (svc?.javaClass?.name ?: "null"))
-                if (svc != null) {
-                    val e4 = svc.javaClass.methods.firstOrNull {
-                        it.name == "E4" && it.parameterTypes.size == 1 &&
-                            (it.parameterTypes[0] == java.lang.Integer.TYPE || it.parameterTypes[0] == Int::class.java)
-                    }
-                    ids.add("E4m=" + (e4 != null))
-                    val raw = ids.getOrNull(1)?.substringAfter("B=")
-                        ?.takeWhile { it.isDigit() || it == '-' }?.toIntOrNull()
-                    if (e4 != null && raw != null) {
-                        val r = runCatching { e4.invoke(svc, raw) }
-                        ids.add("E4($raw)=" + (r.getOrNull()?.javaClass?.name ?: "null:" + r.exceptionOrNull()))
-                    }
-                }
-                logOnce("preview: " + ids.joinToString(" "))
-            }.onFailure { log("preview trace err: $it") }
-            chain.proceed()
-        }
-        log("PreviewProcessor.s 已挂（诊断 cameraId / E4）")
     }
 
     /**
@@ -866,122 +448,6 @@ class CameraPaletteModule : XposedModule() {
         log("$className init/6 hooked=$n")
     }
 
-    // ------------------------------------------------------------ mode list（POP）
-
-    /**
-     * unit.sdk 里 `com.oplus.ocs.camera.configure.JsonParser.parseSupportedMode()` 读
-     * `camera_unit_config` 的 `mode_type_list`，返回 Map<摄像头 id, List<模式名>>。
-     * 相机模式条就是从这里来的。
-     *
-     * 做法：先把它解析出来的东西打一条日志（诊断），再把 `retro_camera_mode`（= POP）
-     * 塞进每个摄像头的模式列表最前面。开关：persist.camunlock.pop，默认开。
-     */
-    private fun hookModeList(cl: ClassLoader) {
-        val cls = runCatching { cl.loadClass(JSON_PARSER) }.getOrNull()
-        if (cls == null) {
-            log("WARN: $JSON_PARSER not found")
-            return
-        }
-        val m = runCatching { cls.getDeclaredMethod("parseSupportedMode") }.getOrNull()
-        if (m == null) {
-            log("WARN: parseSupportedMode not found")
-            return
-        }
-        hook(m).intercept { chain ->
-            val r = chain.proceed()
-            val map = r as? Map<*, *> ?: return@intercept r
-            runCatching {
-                logOnce("mode_type_list: " + map.entries.joinToString("; ") { e ->
-                    e.key.toString() + "=" + (e.value as? Collection<*>)?.joinToString(",", "[", "]")
-                })
-            }
-            if (!popEnabled()) return@intercept r
-            runCatching {
-                val out = LinkedHashMap<Any?, Any?>()
-                map.forEach { (k, v) ->
-                    val list = (v as? Collection<*>)?.map { it?.toString() }?.toMutableList()
-                    if (list != null) {
-                        list.remove(POP_MODE)
-                        list.add(0, POP_MODE)
-                        out[k] = list
-                    } else out[k] = v
-                }
-                logOnce("mode_type_list: 已注入 $POP_MODE")
-                return@intercept out
-            }
-            r
-        }
-        log("JsonParser.parseSupportedMode hooked（POP 注入）")
-    }
-
-    private fun popEnabled(): Boolean = synchronized(switchCache) {
-        switchCache.getOrPut("pop") {
-            runCatching {
-                val c = Class.forName("android.os.SystemProperties")
-                val g = c.getMethod("getBoolean", String::class.java, java.lang.Boolean.TYPE)
-                g.invoke(null, "persist.camunlock.pop", true) as Boolean
-            }.getOrDefault(true)
-        }
-    }
-
-    /**
-     * 模式条那 5 个格子是 APK 里另一张表挑出来的（不在 mode_type_list 里），
-     * 而 `com.oplus.camera.v6` 是模式 id ↔ tag 的映射表（"master" / "retroCamera" / …）。
-     *
-     * 兜底方案：把大师那格换成 POP —— 在映射里做双向替换，
-     * master ⇄ retro_camera_mode / retroCamera。开关 persist.camunlock.pop.swap，默认开。
-     */
-    private fun hookModeSwap(cl: ClassLoader) {
-        val cls = runCatching { cl.loadClass(MODE_MAP_CLS) }.getOrNull()
-        if (cls == null) {
-            log("WARN: $MODE_MAP_CLS not found")
-            return
-        }
-        var n = 0
-        cls.declaredMethods.forEach { m ->
-            if (!Modifier.isStatic(m.modifiers)) return@forEach
-            if (m.parameterTypes.size != 1 || m.parameterTypes[0] != String::class.java) return@forEach
-            if (m.returnType != String::class.java) return@forEach
-            runCatching {
-                hook(m).intercept { chain ->
-                    val arg = chain.getArg(0) as? String
-                    val mapped = swapMode(arg)
-                    if (mapped != null) {
-                        logOnce("mode swap: $arg -> $mapped (${m.name})")
-                        mapped
-                    } else chain.proceed()
-                }
-                n++
-            }.onFailure { log("hook ${m.name}: $it") }
-        }
-        log("$MODE_MAP_CLS String 映射 hooked=$n")
-    }
-
-    /** master ⇄ POP 的双向替换；开关关着返回 null（走原实现） */
-    private fun swapMode(arg: String?): String? {
-        if (arg == null) return null
-        if (!popSwapEnabled()) return null
-        return when (arg) {
-            "master", "master_mode", "master_video_mode", "masterVideo" -> {
-                if (arg.endsWith("_mode")) "retro_camera_mode" else "retroCamera"
-            }
-            "retro_camera_mode", "retroCamera" -> {
-                if (arg.endsWith("_mode")) "master_video_mode" else "masterVideo"
-            }
-            else -> null
-        }
-    }
-
-    private fun popSwapEnabled(): Boolean = synchronized(switchCache) {
-        switchCache.getOrPut("popswap") {
-            runCatching {
-                val c = Class.forName("android.os.SystemProperties")
-                val g = c.getMethod("getBoolean", String::class.java, java.lang.Boolean.TYPE)
-                g.invoke(null, "persist.camunlock.pop.swap", true) as Boolean
-            }.getOrDefault(true)
-        }
-    }
-
     /**
      * 调色盘入口的模式白名单。
      *
@@ -1074,108 +540,6 @@ class CameraPaletteModule : XposedModule() {
         log("UpdateHelper.getConfigString hooked（解密结果落盘）")
     }
 
-    /**
-     * 诊断用：找出「模式条那 5 格」是哪个类拼出来的。
-     *
-     * 已知同时含 masterVideo / retroCamera 常量的类里，挑最像的 3 个，
-     * 把它们「返回 List / String / *Mode」的方法全都 hook 一遍，打出 入参 → 返回值。
-     * 谁返回的是 5 个模式名，谁就是目标。
-     */
-    private fun probeModeBuilders(cl: ClassLoader) {
-        MODE_PROBE_CLASSES.forEach { name ->
-            val cls = runCatching { cl.loadClass(name) }.getOrNull()
-            if (cls == null) {
-                log("probe: $name 不存在")
-                return@forEach
-            }
-            var n = 0
-            cls.declaredMethods.forEach { m ->
-                if (m.parameterCount > 2) return@forEach
-                val rt: Class<*> = m.returnType
-                val ok: Boolean = List::class.java.isAssignableFrom(rt) ||
-                        rt == String::class.java ||
-                        rt.name.endsWith("BaseMode") ||
-                        rt.simpleName.contains("Mode")
-                if (!ok) return@forEach
-                runCatching {
-                    hook(m).intercept { chain ->
-                        val r: Any? = chain.proceed()
-                        runCatching {
-                            val a = chain.args.joinToString(",") { it?.toString()?.take(20) ?: "null" }
-                            logOnce("PROBE " + cls.simpleName + "." + m.name + "(" + a + ") -> " + (r?.toString()?.take(90) ?: "null"))
-                        }
-                        r
-                    }
-                    n++
-                }
-            }
-            log("probe: $name 挂了 $n 个方法")
-        }
-    }
-
-    /**
-     * 查「模式 tag → mode_id」。
-     *
-     * `mode_data.db` 的 `mode_info.mode_id` 就是模式条排序用的 id；
-     * 相机自己用 `zp.j.k(String):I` 把 tag 转成 id（`CameraManager$r` 里就是
-     * `Ac()` 拿当前 tag → `zp.j.k()` → `zp.j.e()` 去查 DB）。
-     *
-     * 这里直接把关心的 tag 全查一遍打到日志里，顺便 hook 一下 k()，
-     * 看看真实运行时会用哪些 tag。
-     */
-    private fun dumpModeIds(cl: ClassLoader) {
-        val cls = runCatching { cl.loadClass("zp.j") }.getOrNull()
-        if (cls == null) {
-            log("WARN: zp.j not found")
-            return
-        }
-        // 注意：不能在这里主动 invoke k()/e()（会卡住相机启动线程），
-        // 只 hook 它们，等相机自己调用时把 tag/资源 id/DB id 打出来。
-        runCatching { cls.getDeclaredMethod("k", String::class.java) }.getOrNull()?.let { k ->
-            runCatching {
-                hook(k).intercept { chain ->
-                    val a = chain.getArg(0) as? String
-                    val v = chain.proceed()
-                    log("zp.j.k(" + a + ") -> " + v)
-                    v
-                }
-            }.onFailure { log("hook zp.j.k: $it") }
-        }
-        runCatching { cls.getDeclaredMethod("e", Integer.TYPE) }.getOrNull()?.let { e ->
-            runCatching {
-                hook(e).intercept { chain ->
-                    val a = chain.getArg(0)
-                    val v = chain.proceed()
-                    log("zp.j.e(" + a + ") -> " + v)
-                    v
-                }
-            }.onFailure { log("hook zp.j.e: $it") }
-        }
-        log("zp.j.k / e 已挂（只记录，不主动调用）")
-
-        // 延迟 6 秒再主动查（启动线程里直接 invoke 会卡住）
-        runCatching {
-            val th = Thread {
-                try { Thread.sleep(6000) } catch (_: Throwable) {}
-                runCatching {
-                    val tags = listOf("retroCamera", "masterVideo", "commonVideo", "common",
-                        "portrait", "professional", "more", "night", "highPixel", "aiScenery")
-                    val e = runCatching { cls.getDeclaredMethod("e", Integer.TYPE) }.getOrNull()
-                    val k = cls.getDeclaredMethod("k", String::class.java)
-                    tags.forEach { t ->
-                        runCatching {
-                            val kv = k.invoke(null, t)
-                            val ev = e?.invoke(null, kv)
-                            log("LATE modeId(" + t + ") k=" + kv + " e=" + ev)
-                        }
-                    }
-                }
-            }
-            th.isDaemon = true
-            th.start()
-        }.onFailure { log("late probe: $it") }
-    }
-
     // ------------------------------------------------------------ filter groups
 
     /**
@@ -1258,16 +622,6 @@ class CameraPaletteModule : XposedModule() {
             }
             log("FilterGroupManager.getConfigBooleanValue hooked=$n")
         }.onFailure { log("hook FilterGroupManager.getConfigBooleanValue: $it") }
-
-        // 5) POP（retro）那组滤镜：CCD / 拍立得 / 流光 / 和光 / 浓郁 / 复古 / 清新 / 通透
-        //    initRetroCameraFilterGroup() 是无条件 add 9 个滤镜的，但只有进 retro 模式才会被调用；
-        //    这里主动调一次，保证 sRetroCameraFilterGroup 有内容。
-        runCatching {
-            val m = cls.getDeclaredMethod("initRetroCameraFilterGroup")
-            m.isAccessible = true
-            m.invoke(null)
-            log("initRetroCameraFilterGroup 已主动调用（POP 滤镜组填充）")
-        }.onFailure { log("initRetroCameraFilterGroup 调用失败: $it") }
 
         // 4) 鲜活/节日/庆典：initFilterGroup 里是无条件 addFrontAndBack 的，用户要求开关控制
         runCatching {

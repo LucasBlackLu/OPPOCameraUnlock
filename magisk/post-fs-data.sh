@@ -85,24 +85,7 @@ if [ -d "$PAYLOAD/framework" ]; then
   done
 fi
 
-# 2) retro_camera_mode（实况调色盘）—— 两个文件一起换，默认关
-#    camera_unit_config            : 模式注册（13 处：mode_type_list / usecase / featureTable …）
-#    camera_unit_feature_config.protobuf : feature 描述（只追加 39 字节的 retro_camera 条目，
-#                                    顶层 repeated field 1，protobuf 拼接语义合法）
-#    缺 protobuf 那条会在 RetroCameraPresenter.<init> 处 requireNonNull NPE。
-#    开：touch $MODDIR/enable_retro
-if [ -f "$MODDIR/enable_retro" ]; then
-  for pair in "camera_unit_config:camera_unit_config" \
-              "camera_unit_feature_config.protobuf:camera_unit_feature_config.protobuf"; do
-    src_name=${pair%%:*}
-    dst_name=${pair##*:}
-    src="$PAYLOAD/config/$src_name"
-    dst="$CAM/config/$dst_name"
-    [ -f "$src" ] && [ -f "$dst" ] || continue
-    umount "$dst" 2>/dev/null
-    chcon u:object_r:vendor_configs_file:s0 "$src" 2>/dev/null
-    mount --bind "$src" "$dst" && log "bind $dst_name ok (retro armed)" || log "bind $dst_name FAILED"
-  done
-fi
+# 2) 配置层：本分支不再带 retro/POP 的配置补丁（camera_unit_config / protobuf），
+#    保持设备原厂配置不动 —— 整份换 Reno 的会让人像模式卡死。
 
 log "done"
