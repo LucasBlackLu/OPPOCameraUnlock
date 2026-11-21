@@ -1,7 +1,12 @@
 package com.oppocamera.unlock.hook
 
 import android.app.Application
+import android.graphics.BitmapFactory
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import android.hardware.HardwareBuffer
+import android.view.View
+import android.widget.ImageView
 import com.oppocamera.unlock.aicomp.AiBridge
 import com.oppocamera.unlock.aicomp.GyroTracker
 import io.github.libxposed.api.XposedModule
@@ -207,6 +212,7 @@ class CameraPaletteModule : XposedModule() {
         runCatching { hookConfigDecrypt(cl) }.onFailure { log("hookConfigDecrypt: $it") }
         runCatching { hookComposition(cl) }.onFailure { log("hookComposition: $it") }
         runCatching { hookProducerModeName(cl) }.onFailure { log("hookProducerModeName: $it") }
+        runCatching { hookUiSkin(cl) }.onFailure { log("hookUiSkin: $it") }
         if (TRACE_INSPIRATION) runCatching { traceInspiration(cl) }.onFailure { log("traceInspiration: $it") }
 
         log("ready · api=${getApiVersion()} · pid=${android.os.Process.myPid()}")
@@ -1169,6 +1175,149 @@ class CameraPaletteModule : XposedModule() {
 
     private fun moduleApkPath(): String? = runCatching { getModuleApplicationInfo().sourceDir }.getOrNull()
 
+    // ------------------------------------------------------------ UI 换图（不换 APK）
+
+    /** 资源名 → assets/ui 下的文件名（来自模块 APK 的 assets/ui/overrides.json）。 */
+    private val uiOverrides = HashMap<String, String>()
+
+    /** 解出来的 Drawable，按资源名缓存。 */
+    private val uiCache = HashMap<String, Drawable>()
+
+    @Volatile private var uiHits = 0
+    @Volatile private var uiChecked = false
+
+    /** 把每张覆盖图解码一遍并打日志（需要 Application 才能拿 Resources，所以在部署阶段调）。 */
+    private fun checkUiAssets() {
+        if (uiChecked || uiOverrides.isEmpty()) return
+        uiChecked = true
+        val res = currentApplication()?.resources ?: run { uiChecked = false; return }
+        val apk = moduleApkPath() ?: return
+        uiOverrides.forEach { (name, file) ->
+            val bitmap = runCatching {
+                ZipFile(apk).use { zip ->
+                    val entry = zip.getEntry("assets/ui/$file") ?: return@use null
+                    zip.getInputStream(entry).use { input -> BitmapFactory.decodeStream(input) }
+                }
+            }.getOrNull()
+            if (bitmap == null) {
+                Adapt.warn("UI 资源缺失：$name → $file")
+            } else {
+                Adapt.info("UI 资源就绪：$name ← $file（${bitmap.width}x${bitmap.height}）")
+            }
+        }
+    }
+
+    /**
+     * 用模块 `assets/ui/` 里的新图替换相机自己的 drawable —— 不替换 APK。
+     *
+     * 原理：挂 `ImageView.setImageResource(int)` 和 `View.setBackgroundResource(int)`，
+     * 用 `resources.getResourceName(id)` 把资源 id 还原成**资源名**
+     * （7.006 和 7.016 的 id 完全不同，只有名字稳定），命中映射表就换成模块里的位图，
+     * 不再走原方法。
+     *
+     * 映射表由 `_tools/make_ui_assets.py` 生成：只收「7.016.29 有改动/新增」且真的是图片的资源
+     * （shape / gradient 那种颜色 XML 不属于图片，换不了也不需要换）。
+     * 开关：`persist.camunlock.ui`，默认开；换了几张可以在 adapt.log 里数。
+     */
+    private fun hookUiSkin(cl: ClassLoader) {
+        if (!Adapt.uiSkinEnabled()) {
+            Adapt.miss("ui.skin", "调色盘 / 灵感构图 UI 换图", "开关关闭（persist.camunlock.ui=0）")
+            return
+        }
+        val apk = moduleApkPath()
+        if (apk == null) {
+            Adapt.miss("ui.skin", "调色盘 / 灵感构图 UI 换图", "拿不到模块 APK 路径")
+            return
+        }
+        val map = readUiOverrides(apk)
+        if (map.isEmpty()) {
+            Adapt.miss("ui.skin", "调色盘 / 灵感构图 UI 换图", "assets/ui/overrides.json 为空")
+            return
+        }
+        uiOverrides.putAll(map)
+
+        var n = 0
+        runCatching {
+            val iv = cl.loadClass("android.widget.ImageView")
+            val m = iv.getDeclaredMethod("setImageResource", Integer.TYPE)
+            hook(m).intercept { chain ->
+                val id = chain.getArg(0) as? Int
+                val view = chain.thisObject as? ImageView
+                if (id != null && replaceUi(view, id, false)) null else chain.proceed()
+            }
+            n++
+        }.onFailure { log("hookUiSkin.setImageResource: $it") }
+
+        runCatching {
+            val v = cl.loadClass("android.view.View")
+            val m = v.getDeclaredMethod("setBackgroundResource", Integer.TYPE)
+            hook(m).intercept { chain ->
+                val id = chain.getArg(0) as? Int
+                val view = chain.thisObject as? View
+                if (id != null && replaceUi(view, id, true)) null else chain.proceed()
+            }
+            n++
+        }.onFailure { log("hookUiSkin.setBackgroundResource: $it") }
+
+        if (n == 0) {
+            Adapt.miss("ui.skin", "调色盘 / 灵感构图 UI 换图", "两个资源入口都没挂上")
+        } else {
+            Adapt.hit("ui.skin", "调色盘 / 灵感构图 UI 换图",
+                "hooked=$n，映射 ${map.size} 项：${map.keys.joinToString(",")}")
+        }
+    }
+
+    /** 命中映射就换成模块里的图；返回 true 表示已经接管，不用再走原方法。 */
+    private fun replaceUi(view: View?, id: Int, background: Boolean): Boolean {
+        if (view == null) return false
+        val name = runCatching {
+            view.resources.getResourceName(id).substringAfter(":drawable/")
+        }.getOrNull() ?: return false
+        if (Adapt.propOn("persist.camunlock.ui.trace")) logOnce("UI 请求：$name")
+        if (!uiOverrides.containsKey(name)) return false
+        val drawable = uiDrawable(view, name) ?: return false
+        val ok = runCatching {
+            if (background) view.background = drawable else (view as ImageView).setImageDrawable(drawable)
+        }.isSuccess
+        if (!ok) return false
+        uiHits++
+        Adapt.detail("UI 替换：$name → ${uiOverrides[name]}（第 $uiHits 次）")
+        return true
+    }
+
+    /** 从模块 APK 里读图并解成 Drawable（不依赖相机能看到我们的包）。 */
+    private fun uiDrawable(view: View, name: String): Drawable? {
+        synchronized(uiCache) { uiCache[name]?.let { return it } }
+        val file = uiOverrides[name] ?: return null
+        val apk = moduleApkPath() ?: return null
+        val bitmap = runCatching {
+            ZipFile(apk).use { zip ->
+                val entry = zip.getEntry("assets/ui/$file") ?: return@use null
+                zip.getInputStream(entry).use { input -> BitmapFactory.decodeStream(input) }
+            }
+        }.getOrNull() ?: return null
+        val drawable = BitmapDrawable(view.resources, bitmap)
+        synchronized(uiCache) { uiCache[name] = drawable }
+        return drawable
+    }
+
+    /** 读 assets/ui/overrides.json（资源名 → 文件名）。 */
+    private fun readUiOverrides(apk: String): Map<String, String> = runCatching {
+        ZipFile(apk).use { zip ->
+            val entry = zip.getEntry("assets/ui/overrides.json")
+                ?: return@use emptyMap<String, String>()
+            val text = zip.getInputStream(entry).use { it.readBytes().toString(Charsets.UTF_8) }
+            val obj = org.json.JSONObject(text).optJSONObject("overrides")
+                ?: return@use emptyMap<String, String>()
+            val out = LinkedHashMap<String, String>()
+            obj.keys().forEach { key ->
+                val file = obj.optString(key)
+                if (file.isNotEmpty()) out[key] = file
+            }
+            out
+        }
+    }.getOrDefault(emptyMap())
+
     // ------------------------------------------------------------ deploy
 
     private fun ensureDeployed(): Boolean {
@@ -1182,6 +1331,8 @@ class CameraPaletteModule : XposedModule() {
             }
             // 到这儿一定有 Application：把「设备 + 相机版本」补打一次（适配先看这行）
             Adapt.deviceOnce(app)
+            // 顺便把 UI 覆盖图解码一遍（日志里能看到「资源就绪」就说明资产打包没问题）
+            runCatching { checkUiAssets() }.onFailure { log("checkUiAssets: $it") }
             return runCatching {
                 val base = File(app.filesDir, "campalette/basictone")
                 val setting = File(base, "setting")

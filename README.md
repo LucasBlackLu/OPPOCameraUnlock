@@ -62,27 +62,48 @@ Reno 17 的调色盘是「一整套 LUT + 一条三维查表流水线」，不�
 AIUnit 接入靠 1.5 KB 的桥接 dex（`assets/aiunit/feiyu_aiunit_bridge.dex`），在相机进程里用相机的
 ClassLoader 当 parent 动态加载。
 
+### UI 换图（不替换相机 APK）
+
+灵感构图的图标、入口引导图、调色盘按钮这些**图片**可以只换图不换 APK：
+把 7.016.29 里改动过的图放进 `app/src/main/assets/ui/`（配 `overrides.json`），
+运行时按**资源名**替换（`ImageView.setImageResource` / `View.setBackgroundResource` 两个入口）。
+
+- 换了几张、有没有就绪，`adapt.log` 里直接看：
+  `HIT ui.skin → hooked=2，映射 5 项 …`、`UI 资源就绪：filter_palette ← filter_palette.png（256x256）`、
+  进面板时的 `UI 替换：…`。
+- 生成/更新：`python _tools/make_ui_assets.py`（数据来自 `_tools/extract_ui.py` 的两版对比）。
+- 开关 `persist.camunlock.ui`（默认开）；`persist.camunlock.ui.trace 1` 会把相机请求的资源名记下来，
+  换机型时用来确认名字是不是同一套。
+- 说明：`layout/`、`shape`、`gradient` 这类资源不是图片，换不了也不该换；
+  相机若用 canvas 自绘（比如调色盘入口本身），不会走上面两个入口。
+
+### 日志（诊断与导出）
+
+- 文件：`/data/user/0/com.oplus.camera/files/camunlock/adapt.log`（logcat 里 tag `CamUnlock`）。
+- 设置页「日志」区现在可以：开关写日志、开关细节 dump（滤镜组条目 / UI 替换明细）、
+  **一键导出到 `/sdcard/Download/camunlock-adapt-*.log`**、清空日志（导出后直接分享给作者就行）。
+
 ### 适配与日志（给换机型用的）
 
 hook 目标全部登记在 `Adapt.kt`：**id + 一句话说明 + 候选类名/方法指纹**。启动结束打一张自检表：
 
 ```
-设备：model=PLJ110 market=OPPO Find X9 · ColorOS=PLJ110_17.0.0.101(CN01) (API 37) · 相机=7.016.29
-模块：com.oppocamera.unlock 2.0.0
+设备（最终）：model=PLJ110 market=OPPO Find X9 · ColorOS=PLJ110_17.0.0.101(CN01) (API 37) · 相机=7.006.121
+模块（最终）：com.oppocamera.unlock 2.0.0
 文件 胶片 LUT：琥珀：/odm/etc/camera/meishe_lut/hu_po.bin → 824183 B
 文件 unit.sdk（滤镜清单）：/product/framework/com.oplus.camera.unit.sdk.jar → 5363803 B
-适配自检：HIT 18 / MISS 1，耗时 59 ms
+适配自检：HIT 19 / MISS 1，耗时 88 ms
   HIT  camera.config      → d/getConfigBooleanValue hooked=2
   HIT  combine.init       → hooked=1（arg[2]=setting / arg[5]=palette）
   HIT  filter.groups.init → hooked=32
-  HIT  frame.source       → tb.q#f（11 参 / 3 个 HardwareBuffer）
+  HIT  frame.source       → wb.r#f（11 参 / 3 个 HardwareBuffer）
+  HIT  ui.skin            → hooked=2，映射 5 项：…
   MISS inspiration.trace  → 候选都不存在：pb.b$a
 ```
 
-- 日志同时进 logcat（tag `CamUnlock`）和
-  `/data/user/0/com.oplus.camera/files/camunlock/adapt.log`（root 可直接读、方便导出）。
 - 某个目标 MISS 只让**那一个功能**不生效，其它照旧；换机型时只需要改候选表，不用碰各个 hook。
 - `persist.camunlock.log.dump 1` 会把每个滤镜组的条目（显示名 + LUT）也打出来，验证/适配都靠它。
+- 完整的适配步骤、候选表对照、验证清单见 **[docs/适配机型.md](docs/适配机型.md)**。
 
 ---
 
@@ -149,9 +170,10 @@ CI（`.github/workflows/build.yml`）：push 到 `main` / PR / 手动 → JDK 21
 | `app/src/main/java/com/oppocamera/unlock/hook/` | 钩子：`CameraPaletteModule.kt`（调色盘/滤镜/构图）、`Adapt.kt`（适配层与自检日志） |
 | `app/src/main/java/com/oppocamera/unlock/` | 设置界面（Compose）、`Shell.kt`（重启相机） |
 | `app/src/main/assets/basictone/` | 部署包：`palette/HDR|SDR/SC16Lut0..8` + `setting/*.ini` |
+| `app/src/main/assets/ui/` | UI 换图：`overrides.json` + 图片（运行时按资源名替换相机 drawable） |
 | `app/src/main/assets/aiunit/` | 灵感构图桥接 dex |
 | `magisk/` | Magisk 模块脚本与打包（`payload/` 内容由固件提取，不入库） |
-| `docs/` | `实现说明.md`（各功能原理）、`DECRYPTED_CONFIG.md`（配置解密笔记） |
+| `docs/` | `适配机型.md`（换机/换版本的完整步骤）、`实现说明.md`（各功能原理）、`DECRYPTED_CONFIG.md`（配置解密笔记） |
 
 ---
 
@@ -166,6 +188,8 @@ CI（`.github/workflows/build.yml`）：push 到 `main` / PR / 手动 → JDK 21
 | `persist.camunlock.filter.{lively,festival,ceremony}` | 鲜活 / 节日 / 庆典，默认关（LUT 未随固件提供） |
 | `persist.camunlock.log` | 写日志（logcat + `files/camunlock/adapt.log`），默认开 |
 | `persist.camunlock.log.dump` | 额外打滤镜组内容等细节，默认关 |
+| `persist.camunlock.ui` | UI 换图（用 `assets/ui` 的图替换相机资源），默认开 |
+| `persist.camunlock.ui.trace` | 打印相机每次请求的 drawable 资源名（换机型核对用），默认关 |
 | `persist.camunlock.palette.off` | 诊断：完全不改 LUT 路径（7.016.29 相机会 native 崩，仅供排查） |
 | `persist.camunlock.palette.device_setting` | 诊断：setting 用原厂那份（原厂缺 `SimTool_Palette_*`，会崩） |
 | `touch /data/adb/modules/oppo_camera_port/minimal` | 不替换任何系统文件，只保留 LSPosed 侧功能 |

@@ -69,4 +69,28 @@ object Shell {
             )
         }
     }
+
+    // ---------------------------------------------------------------- 日志
+
+    private const val ADAPT_DIR = "/data/user/0/com.oplus.camera/files/camunlock"
+    private const val ADAPT_LOG = "$ADAPT_DIR/adapt.log"
+
+    /** adapt.log 现在有多少行（拿不到就返回 -1）。 */
+    fun adaptLogLines(): Int {
+        val r = run("wc -l < $ADAPT_LOG 2>/dev/null")
+        return r.out.trim().toIntOrNull() ?: -1
+    }
+
+    /** 把 adapt.log 复制到 /sdcard/Download，方便用文件管理器/分享拿走。 */
+    fun exportAdaptLog(): Result {
+        val stamp = java.text.SimpleDateFormat("MMdd-HHmm", java.util.Locale.ROOT)
+            .format(java.util.Date())
+        val dst = "/sdcard/Download/camunlock-adapt-$stamp.log"
+        val r = run("mkdir -p /sdcard/Download && cp $ADAPT_LOG $dst && chmod 644 $dst && echo $dst")
+        return Result(r.ok && r.out.contains(".log"), r.out.ifBlank { "复制失败" })
+    }
+
+    /** 清空日志（相机还开着也能清，下次写会重新建）。 */
+    fun clearAdaptLog(): Result = run(": > $ADAPT_LOG; wc -l < $ADAPT_LOG 2>/dev/null")
+    
 }

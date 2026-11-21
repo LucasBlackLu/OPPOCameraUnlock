@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "note": "资源名 -> png 文件名；运行时由 UiSkin hook 按资源名替换",
+  "overrides": {
+    "ai_composition_entry_guide_inspiration": "ai_composition_entry_guide_inspiration.png",
+    "ai_composition_entry_guide_real_scene": "ai_composition_entry_guide_real_scene.png",
+    "ai_composition_entry_guide_select_check_selected": "ai_composition_entry_guide_select_check_selected.png",
+    "filter_palette": "filter_palette.png",
+    "soft_light_bottom_menu_icon_on": "soft_light_bottom_menu_icon_on.png"
+  }
+}

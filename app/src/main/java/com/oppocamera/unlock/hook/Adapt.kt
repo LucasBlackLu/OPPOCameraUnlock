@@ -217,8 +217,11 @@ object Adapt {
     /** 滤镜去重（默认开）：OEM 表里同一组会重复加同一条滤镜（如「和光」）。 */
     fun dedupEnabled(): Boolean = flag("persist.camunlock.filter.dedup", true)
 
+    /** UI 换图（默认开）：用模块 assets/ui 里的新图替换相机自己的资源。 */
+    fun uiSkinEnabled(): Boolean = flag("persist.camunlock.ui", true)
+
     /** 读一个系统属性开关；默认关。 */
-    fun propOn(key: String): Boolean = flag(key, false)
+    fun propOn(key: String, def: Boolean = false): Boolean = flag(key, def)
 
     // ---------------------------------------------------------------- 当前模式
 
