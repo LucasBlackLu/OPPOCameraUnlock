@@ -2,12 +2,12 @@ package com.oppocamera.unlock.hook
 
 import android.app.Application
 import android.hardware.HardwareBuffer
-import android.util.Log
 import com.oppocamera.unlock.aicomp.AiBridge
 import com.oppocamera.unlock.aicomp.GyroTracker
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 import java.io.File
+import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.util.zip.ZipFile
 
@@ -43,7 +43,7 @@ class CameraPaletteModule : XposedModule() {
          * 改这个字符串会让相机侧的缓存整包重铺 —— 从 1.1.0 回退到 1.0.0 是为了
          * 让装过 POP 那版的机器把 assets 里已删掉的 setting_Retro/ 一起清掉。
          */
-        private const val EXTRACT = "reno17p-1.0.0"
+        private const val EXTRACT = "reno17p-1.2.2"
         private const val ASSET_ROOT = "assets/basictone/"
 
         /** 调色盘 */
@@ -60,9 +60,12 @@ class CameraPaletteModule : XposedModule() {
         private const val UPDATE_HELPER =
             "com.oplus.ocs.camera.consumer.apsAdapter.update.UpdateHelper"
 
-        /** 滤镜组对象（addFrontAndBack 在这里，用来卡 鲜活/节日/庆典） */
+        /** 滤镜组对象（addFrontAndBack 在这里，用来卡 鲜活/节日/庆典、做同名去重） */
         private const val FILTER_GROUP =
             "com.oplus.ocs.camera.ipusdk.processunit.filter.list.FilterGroup"
+
+        /** 每个组都有的「无滤镜」占位，去重时不能算重复 */
+        private const val NONE_FILTER = "R.string.camera_filter_none"
 
         /** 调色盘额外滤镜的开关 key（FilterGroupManager 里逐个滤镜组用它们判定） */
         private val FILTER_KEYS = listOf(
@@ -192,6 +195,7 @@ class CameraPaletteModule : XposedModule() {
     override fun onPackageLoaded(param: PackageLoadedParam) {
         if (param.packageName != PKG) return
         val cl = param.defaultClassLoader
+        Adapt.install(cl, moduleVersion())
 
         runCatching { hookConfig(cl) }.onFailure { log("hookConfig: $it") }
         runCatching { hookAdapter(cl) }.onFailure { log("hookAdapter: $it") }
@@ -206,16 +210,21 @@ class CameraPaletteModule : XposedModule() {
         if (TRACE_INSPIRATION) runCatching { traceInspiration(cl) }.onFailure { log("traceInspiration: $it") }
 
         log("ready · api=${getApiVersion()} · pid=${android.os.Process.myPid()}")
+        Adapt.summary()
     }
+
+    /** 模块自己的版本号（适配时要知道跑的是哪一版）。 */
+    private fun moduleVersion(): String = runCatching {
+        val info = getModuleApplicationInfo()
+        val pm = currentApplication()?.packageManager
+        val v = pm?.getPackageInfo(info.packageName, 0)?.versionName
+        "${info.packageName} ${v ?: "?"}"
+    }.getOrElse { "com.oppocamera.unlock ?" }
 
     // ------------------------------------------------------------ feature key
 
     private fun hookConfig(cl: ClassLoader) {
-        val cls = runCatching { cl.loadClass(CONFIG) }.getOrNull()
-        if (cls == null) {
-            log("WARN: $CONFIG not found")
-            return
-        }
+        val cls = Adapt.cls("camera.config", "CameraConfig（配置返回值入口）", CONFIG) ?: return
         // 两个入口都要挂：
         //   d(String, boolean, boolean)      —— 老三参版本，调色盘 / 构图走这里
         //   getConfigBooleanValue(String)    —— 内部不经过 d()，自己查缓存表再 parse 原始字符串，
@@ -236,7 +245,7 @@ class CameraPaletteModule : XposedModule() {
                 n++
             }.onFailure { log("hook CameraConfig.${m.name}: $it") }
         }
-        log("CameraConfig.d/getConfigBooleanValue hooked=$n")
+        Adapt.hit("camera.config", "CameraConfig（配置返回值入口）", "d/getConfigBooleanValue hooked=$n")
     }
 
     /**
@@ -265,21 +274,14 @@ class CameraPaletteModule : XposedModule() {
      * tag → unit.sdk 模式名的翻译；原名字能建出来就原样透传，不重试。
      */
     private fun hookProducerModeName(cl: ClassLoader) {
-        val cls = runCatching {
-            cl.loadClass("com.oplus.ocs.camera.producer.mode.ModeFactory")
-        }.getOrNull()
-        if (cls == null) {
-            log("WARN: ModeFactory not found")
-            return
-        }
-        val m = cls.declaredMethods.firstOrNull {
+        val cls = Adapt.cls(
+            "producer.mode", "unit.sdk ModeFactory（tag → 模式名）",
+            "com.oplus.ocs.camera.producer.mode.ModeFactory"
+        ) ?: return
+        val m = Adapt.method("producer.mode.getMode", "getMode(String)，失败才翻译", cls) {
             it.name == "getMode" && it.parameterTypes.size == 1 &&
                 it.parameterTypes[0] == String::class.java
-        }
-        if (m == null) {
-            log("WARN: ModeFactory.getMode(String) not found")
-            return
-        }
+        } ?: return
         hook(m).intercept { chain ->
             val name = chain.args.getOrNull(0) as? String
             try {
@@ -334,11 +336,7 @@ class CameraPaletteModule : XposedModule() {
      * 它返回的是集合/映射，这里在出口把缺的 feature 名补进去。
      */
     private fun hookAdapter(cl: ClassLoader) {
-        val cls = runCatching { cl.loadClass(ADAPTER) }.getOrNull()
-        if (cls == null) {
-            log("WARN: $ADAPTER not found")
-            return
-        }
+        val cls = Adapt.cls("camera.adapter", "FeatureConfigureAdapter（特性表）", ADAPTER) ?: return
         var n = 0
         cls.declaredMethods.forEach { m ->
             val rt = m.returnType
@@ -378,7 +376,7 @@ class CameraPaletteModule : XposedModule() {
                 n++
             }.onFailure { log("hook adapter#${m.name}: $it") }
         }
-        log("FeatureConfigureAdapter hooked=$n")
+        Adapt.hit("camera.adapter", "FeatureConfigureAdapter（特性表）", "hooked=$n 个返回集合/映射的方法")
     }
 
     /**
@@ -407,16 +405,19 @@ class CameraPaletteModule : XposedModule() {
     // ------------------------------------------------------------ combine lut
 
     private fun hookInit(cl: ClassLoader, className: String) {
-        val cls = runCatching { cl.loadClass(className) }.getOrNull()
-        if (cls == null) {
-            log("WARN: $className not found")
-            return
-        }
+        val id = if (className == COMBINE) "combine.init" else "combine.sdk.init"
+        val desc = if (className == COMBINE) "CombineLutHelper.init(6 参)" else "CombineLutProcessUnitSDK.init(6 参)"
+        val cls = Adapt.cls(id, "$desc —— 调色盘 LUT 路径重定向", className) ?: return
         var n = 0
         cls.declaredMethods.forEach { m ->
             if (m.name != "init" || m.parameterTypes.size != 6) return@forEach
             runCatching {
                 hook(m).intercept { chain ->
+                    // 总开关（诊断用）：persist.camunlock.palette.off 1 = 完全不改路径，
+                    // 相机走原厂 /odm 目录。用来区分「是调色盘注入的问题」还是原厂本来如此。
+                    if (Adapt.propOn("persist.camunlock.palette.off")) {
+                        return@intercept chain.proceed()
+                    }
                     val arg5 = chain.getArg(5) as? String
                     if (arg5 == null || !arg5.contains("palette")) {
                         return@intercept chain.proceed()
@@ -429,6 +430,9 @@ class CameraPaletteModule : XposedModule() {
                     val odt = odtPath
 
                     val args = chain.args.toMutableList()
+                    // arg[2] 是 setting 目录、arg[5] 是 palette 目录：两个都要换成部署目录。
+                    // 只换 palette 会让 native 读到的 LUT 数组对不上，libCombineLutJni.processV3
+                    // 直接 SIGSEGV（addr=0x20）—— 实测过，别单独换。
                     args[2] = setting
                     args[5] = palette
 
@@ -445,7 +449,11 @@ class CameraPaletteModule : XposedModule() {
                 n++
             }.onFailure { log("hook $className.init: $it") }
         }
-        log("$className init/6 hooked=$n")
+        if (n == 0) {
+            Adapt.miss(id, "$desc —— 调色盘 LUT 路径重定向", "类里没有 6 参 init")
+        } else {
+            Adapt.hit(id, "$desc —— 调色盘 LUT 路径重定向", "hooked=$n（arg[2]=setting / arg[5]=palette）")
+        }
     }
 
     /**
@@ -460,16 +468,11 @@ class CameraPaletteModule : XposedModule() {
      * 开关：persist.camunlock.palette.allmode，默认开。
      */
     private fun hookPaletteGate(cl: ClassLoader) {
-        val cls = runCatching { cl.loadClass(COMMON_UTIL) }.getOrNull()
-        if (cls == null) {
-            log("WARN: $COMMON_UTIL not found")
-            return
-        }
-        val m = runCatching { cls.getDeclaredMethod("isSupportPalette", String::class.java) }.getOrNull()
-        if (m == null) {
-            log("WARN: isSupportPalette not found")
-            return
-        }
+        val cls = Adapt.cls("palette.gate", "CommonUtil.isSupportPalette（调色盘入口白名单）", COMMON_UTIL) ?: return
+        val m = Adapt.method("palette.gate", "isSupportPalette(String)", cls) {
+            it is Method && it.name == "isSupportPalette" && it.parameterTypes.size == 1 &&
+                it.parameterTypes[0] == String::class.java
+        } ?: return
         hook(m).intercept { chain ->
             val mode = chain.getArg(0) as? String
             val on = synchronized(switchCache) {
@@ -485,7 +488,7 @@ class CameraPaletteModule : XposedModule() {
             logOnce("isSupportPalette(" + mode + ") -> true")
             true
         }
-        log("CommonUtil.isSupportPalette hooked（所有模式放行调色盘）")
+        Adapt.hit("palette.gate", "isSupportPalette(String)", "恒 true（开关 persist.camunlock.palette.allmode）")
     }
 
     /**
@@ -500,25 +503,15 @@ class CameraPaletteModule : XposedModule() {
      * 下一步就能读懂它的结构，再让这个 hook 直接返回改过的 JSON。
      */
     private fun hookConfigDecrypt(cl: ClassLoader) {
-        val cls = runCatching { cl.loadClass(UPDATE_HELPER) }.getOrNull()
-        if (cls == null) {
-            log("WARN: $UPDATE_HELPER not found")
-            return
-        }
-        val jniCls = runCatching {
-            cl.loadClass("com.oplus.ocs.camera.consumer.apsAdapter.config.OplusStringJNI")
-        }.getOrNull()
-        if (jniCls == null) {
-            log("WARN: OplusStringJNI not found")
-            return
-        }
-        val m = runCatching {
-            cls.getDeclaredMethod("getConfigString", ByteArray::class.java, jniCls)
-        }.getOrNull()
-        if (m == null) {
-            log("WARN: getConfigString not found")
-            return
-        }
+        val cls = Adapt.cls("config.decrypt", "UpdateHelper.getConfigString（配置 JNI 解密）", UPDATE_HELPER) ?: return
+        val jniCls = Adapt.cls(
+            "config.decrypt.jni", "OplusStringJNI（解密用的 JNI 参数类型）",
+            "com.oplus.ocs.camera.consumer.apsAdapter.config.OplusStringJNI"
+        ) ?: return
+        val m = Adapt.method("config.decrypt.getConfigString", "getConfigString(byte[], OplusStringJNI)", cls) {
+            it.name == "getConfigString" && it.parameterTypes.size == 2 &&
+                it.parameterTypes[0] == ByteArray::class.java
+        } ?: return
         hook(m).intercept { chain ->
             val r = chain.proceed() as? String
             if (r != null && r.length > 200) {
@@ -537,7 +530,7 @@ class CameraPaletteModule : XposedModule() {
             }
             r
         }
-        log("UpdateHelper.getConfigString hooked（解密结果落盘）")
+        Adapt.hit("config.decrypt.getConfigString", "getConfigString(byte[], OplusStringJNI)", "解密结果落盘到 files/decoded/")
     }
 
     // ------------------------------------------------------------ filter groups
@@ -555,11 +548,9 @@ class CameraPaletteModule : XposedModule() {
      *   initPaletteExtraFilterGroup(group) { if (...) { add("qing_tou.bin"); add("hu_po.bin") } }
      */
     private fun hookFilterGroups(cl: ClassLoader) {
-        val cls = runCatching { cl.loadClass(FILTER_GROUPS) }.getOrNull()
-        if (cls == null) {
-            log("WARN: $FILTER_GROUPS not found")
-            return
-        }
+        val cls = Adapt.cls(
+            "filter.groups", "unit.sdk FilterGroupManager（滤镜组门控）", FILTER_GROUPS
+        ) ?: return
 
         // 1) 所有 isXxx() 静态判定放行；导演联名（姜文/贾樟柯）跳过
         runCatching {
@@ -580,6 +571,7 @@ class CameraPaletteModule : XposedModule() {
                 n++
             }
             log("FilterGroupManager is*() hooked=$n")
+            Adapt.hit("filter.groups.is", "FilterGroupManager 的 isXxx() 判定", "hooked=$n（导演联名按开关）")
         }.onFailure { log("hook is*(): $it") }
 
         // 2) 进任何 init*FilterGroup 之前把 sbXxxSupport 补成 true，并顺便打一组数量
@@ -593,13 +585,17 @@ class CameraPaletteModule : XposedModule() {
                     val r = chain.proceed()
                     runCatching {
                         val arg = chain.args.firstOrNull()
-                        if (arg != null) logOnce(m.name + " -> " + describeGroup(arg))
+                        if (arg != null) {
+                            logOnce(m.name + " -> " + describeGroup(arg))
+                            dumpGroup(m.name, arg)
+                        }
                     }
                     r
                 }
                 n++
             }
             log("init*FilterGroup hooked=$n")
+            Adapt.hit("filter.groups.init", "FilterGroupManager 的 init*FilterGroup", "hooked=$n")
         }.onFailure { log("hook init*FilterGroup: $it") }
 
         // 3) 兜底：内部走 getConfigBooleanValue(key) 的一律放行
@@ -621,28 +617,67 @@ class CameraPaletteModule : XposedModule() {
                 n++
             }
             log("FilterGroupManager.getConfigBooleanValue hooked=$n")
+            Adapt.hit("filter.groups.cfg", "FilterGroupManager.getConfigBooleanValue", "hooked=$n（FILTER_KEYS 强制 true）")
         }.onFailure { log("hook FilterGroupManager.getConfigBooleanValue: $it") }
 
-        // 4) 鲜活/节日/庆典：initFilterGroup 里是无条件 addFrontAndBack 的，用户要求开关控制
+        // 4) 鲜活/节日/庆典 开关 + 同名滤镜去重
+        //
+        //    去重是「身份」层面的，不是位置层面（参考 OmniCam-Muse 的做法：一条滤镜的身份
+        //    永远是它自己，不随位置变）。原厂表里同一个滤镜组会重复加同一条滤镜 ——
+        //    例如视频组把「和光」/portra400_normal.bin 加了两次（dexdump 里同一组 v1/v2 复用），
+        //    调色盘上就是两个「和光」。这里按显示名在组内只保留第一次出现的那条。
+        //    开关：persist.camunlock.filter.dedup，默认开。
         runCatching {
             val fg = cl.loadClass(FILTER_GROUP)
+            val seen = java.util.WeakHashMap<Any, MutableSet<String>>()
             var n = 0
             fg.declaredMethods.forEach { m ->
                 if (m.name != "addFrontAndBack" || m.parameterTypes.size != 2) return@forEach
                 hook(m).intercept { chain ->
-                    val lut = chain.args.firstOrNull {
-                        it is String && SWITCH_LUT.containsValue(it)
-                    } as? String
+                    val lut = chain.getArg(0) as? String
+                    val name = chain.getArg(1) as? String
+                    // a) 鲜活/节日/庆典：开关关着就不加
                     val sw = lut?.let { l -> SWITCH_LUT.entries.firstOrNull { it.value == l }?.key }
                     if (sw != null && !switchOn(sw)) {
-                        logOnce("skip " + lut + "（" + sw + " 开关关着）")
-                        null
-                    } else chain.proceed()
+                        logOnce("skip $lut（$sw 开关关着）")
+                        return@intercept null
+                    }
+                    // b) 同名去重（"无滤镜"那条不算，它是每个组都有的占位）
+                    val group = chain.thisObject
+                    if (Adapt.dedupEnabled() && group != null && name != null && name != NONE_FILTER) {
+                        val names = synchronized(seen) {
+                            seen.getOrPut(group) { LinkedHashSet() }
+                        }
+                        if (!names.add(name)) {
+                            Adapt.info("滤镜去重：${Adapt.string(name)}（$name / $lut）同组重复，跳过")
+                            return@intercept null
+                        }
+                    }
+                    chain.proceed()
                 }
                 n++
             }
             log("FilterGroup.addFrontAndBack hooked=$n")
+            Adapt.hit("filter.group.add", "FilterGroup.addFrontAndBack（加滤镜 + 去重）", "hooked=$n")
         }.onFailure { log("hook addFrontAndBack: $it") }
+    }
+
+    /** 把一个滤镜组的条目打出来（dump 开关打开时才打）：显示名 + LUT。适配和验证都靠它。 */
+    private fun dumpGroup(method: String, group: Any?) {
+        if (group == null || !Adapt.dumpEnabled()) return
+        val pairs = runCatching {
+            val cls = group.javaClass
+            val typeField = cls.getDeclaredField("mTypeList").apply { isAccessible = true }
+            val nameField = cls.getDeclaredField("mNameIdList").apply { isAccessible = true }
+            val types = typeField.get(group) as? List<*> ?: return@runCatching emptyList<Pair<String, String>>()
+            val names = nameField.get(group) as? List<*> ?: return@runCatching emptyList()
+            types.mapIndexed { i, t ->
+                (names.getOrNull(i)?.toString() ?: "-") to (t?.toString() ?: "-")
+            }
+        }.getOrDefault(emptyList())
+        if (pairs.isEmpty()) return
+        Adapt.info("滤镜组 $method：共 ${pairs.size} 条")
+        pairs.forEach { (name, lut) -> Adapt.info("    ${Adapt.string(name)}  ($lut)") }
     }
 
     /** 把 FILTER_FLAG_FIELDS 里的静态布尔字段设为 true（幂等，失败不抛） */
@@ -702,9 +737,10 @@ class CameraPaletteModule : XposedModule() {
     private fun hookPaletteColors(cl: ClassLoader) {
         // 换过 Reno17p 的 unit.sdk 之后真实取色表类都在了（注意包名是 ipusdk 不是 ipuapi），
         // 有依赖就不打桩，让真实现算颜色；否则格子会被 Recipe.empty() 画成全黑。
-        val dep = runCatching {
-            cl.loadClass("com.oplus.ocs.camera.ipusdk.processunit.filter.palette.PaletteSeekbarColorTable")
-        }.getOrNull()
+        val dep = Adapt.cls(
+            "palette.color.table", "PaletteSeekbarColorTable（真取色表，有就不打桩）",
+            "com.oplus.ocs.camera.ipusdk.processunit.filter.palette.PaletteSeekbarColorTable"
+        )
         if (dep != null) {
             log("palette colors: PaletteSeekbarColorTable 存在，跳过打桩（用真实现）")
             return
@@ -713,14 +749,11 @@ class CameraPaletteModule : XposedModule() {
             "com.oplus.ocs.camera.ipuapi.process.filter.palette.PaletteColors",
             "com.oplus.ocs.camera.ipuapi.process.filter.palette.PaletteSeekbarColors"
         )
+        var stubs = 0
         classes.forEach { className ->
-            val cls = runCatching { cl.loadClass(className) }.getOrNull()
-            if (cls == null) {
-                log("WARN: $className not found")
-                return@forEach
-            }
+            val cls = Adapt.cls("palette.color.stub", "PaletteColors/SeekbarColors（取色兜底）", className)
+            if (cls == null) return@forEach
             var n = 0
-            var trackers = 0
             cls.declaredMethods.forEach { m ->
                 if (!Modifier.isStatic(m.modifiers)) return@forEach
                 if (m.parameterTypes.size != 1 || m.parameterTypes[0] != String::class.java) return@forEach
@@ -734,8 +767,10 @@ class CameraPaletteModule : XposedModule() {
                     n++
                 }.onFailure { log("hook $className.${m.name}: $it") }
             }
+            stubs += n
             log("$className get/Recipe hooked=$n")
         }
+        Adapt.hit("palette.color.stub", "PaletteColors/SeekbarColors（取色兜底）", "stub hooked=$stubs")
     }
 
     /** 造一个最小可用的 Recipe：优先 empty()，其次 int[] 构造。失败返回 null。 */
@@ -831,11 +866,8 @@ class CameraPaletteModule : XposedModule() {
 
         var entries = 0
         COMPOSITION_ENTRIES.forEach { name ->
-            val cls = runCatching { cl.loadClass(name) }.getOrNull()
-            if (cls == null) {
-                log("构图入口缺失: $name")
-                return@forEach
-            }
+            val cls = Adapt.cls("composition.entry", "灵感构图入口（随版本改名）", name)
+            if (cls == null) return@forEach
             var n = 0
             var trackers = 0
             cls.declaredMethods.forEach { m ->
@@ -891,7 +923,11 @@ class CameraPaletteModule : XposedModule() {
             }
             if (trackers > 0) log("已挂 $name 构图跟踪 x$trackers")
         }
-        if (entries == 0) log("没有可用的构图入口") else log("灵感构图已接入云端")
+        if (entries == 0) {
+            Adapt.miss("composition.entry", "灵感构图入口（随版本改名）", "候选类都没找到流式构图方法")
+        } else {
+            Adapt.hit("composition.entry", "灵感构图入口（随版本改名）", "runCompositionStreaming×$entries")
+        }
         if (TRACE_COMPOSITION) traceComposition(cl)
     }
 
@@ -925,11 +961,12 @@ class CameraPaletteModule : XposedModule() {
 
     /** 临时诊断：「灵感推荐」的鉴权/网络方法调用，连带异常一起记。 */
     private fun traceInspiration(cl: ClassLoader) {
+        var hooked = 0
+        val hits = mutableListOf<String>()
         INSPIRATION_CLASSES.forEach { name ->
-            val cls = runCatching { cl.loadClass(name) }.getOrNull() ?: run {
-                log("灵感: 类不存在 $name")
-                return@forEach
-            }
+            val cls = Adapt.cls("inspiration.trace", "灵感推荐鉴权/网络类（跟踪用）", name)
+            if (cls == null) return@forEach
+            hits += cls.simpleName
             cls.declaredMethods.forEach { m ->
                 runCatching {
                     hook(m).intercept { chain ->
@@ -951,21 +988,29 @@ class CameraPaletteModule : XposedModule() {
                             throw t
                         }
                     }
+                    hooked++
                 }.onFailure { log("挂灵感 ${cls.simpleName}#${m.name} 失败: $it") }
             }
         }
-        log("灵感链路跟踪已挂")
+        log("灵感链路跟踪已挂 methods=$hooked")
+        if (hits.isEmpty()) {
+            Adapt.miss("inspiration.trace", "灵感推荐鉴权/网络类（跟踪用）", "一个候选都没有")
+        } else {
+            Adapt.hit("inspiration.trace", "灵感推荐鉴权/网络类（跟踪用）", "命中 ${hits.size} 类：${hits.joinToString(",")}")
+        }
     }
 
     /** 取帧类：预览帧在相机线程上路过这里，顺手记一份。 */
     private fun hookFrameSource(cl: ClassLoader) {
         // 不能"第一个存在的类就是对的"：TB 包里 tb.u / tb.q / tb.d 在不同版本里都存在，
         // 但只有其中一个带「11 参 + ≥2 HardwareBuffer」的帧方法。逐个试，谁有方法用谁。
+        // 这一段就是「适配解耦」的样板：换相机版本时只改 FRAME_CLASSES，别处不动。
         var n = 0
+        var hitAt = ""
         for (name in FRAME_CLASSES) {
             if (n > 0) break
             val cls = runCatching { Class.forName(name, false, cl) }.getOrNull() ?: continue
-            log("取帧候选类: ${cls.name}")
+            Adapt.detail("取帧候选类存在: ${cls.name}")
             cls.declaredMethods.forEach { m ->
                 if (n > 0) return@forEach
                 if (m.parameterCount != 11) return@forEach
@@ -980,11 +1025,17 @@ class CameraPaletteModule : XposedModule() {
                         chain.proceed()
                     }
                     n++
-                    log("取帧类命中: ${cls.name} / 方法: ${m.name}")
+                    hitAt = "${cls.name}#${m.name}（11 参 / " +
+                        m.parameterTypes.count { it == HardwareBuffer::class.java } + " 个 HardwareBuffer）"
+                    log("取帧类命中: $hitAt")
                 }.onFailure { log("取帧方法挂钩失败: $it") }
             }
         }
-        if (n == 0) log("取帧类未命中: $FRAME_CLASSES")
+        if (n == 0) {
+            Adapt.miss("frame.source", "预览取帧类（灵感构图的帧来源）", "候选都不带 11 参帧方法：" + FRAME_CLASSES)
+        } else {
+            Adapt.hit("frame.source", "预览取帧类（灵感构图的帧来源）", hitAt)
+        }
         log("取帧方法 hooked=$n")
     }
 
@@ -1122,23 +1173,39 @@ class CameraPaletteModule : XposedModule() {
                 val base = File(app.filesDir, "campalette/basictone")
                 val setting = File(base, "setting")
                 val palette = File(base, "palette")
+                val lmt = File(base, "lmt")
                 val odt = File(base, "odt")
                 val stamp = File(base, ".extract")
 
                 val cached = stamp.isFile && runCatching { stamp.readText().trim() }.getOrNull() == EXTRACT
-                if (cached && File(palette, "HDR/SC16Lut8").length() == LUT_SIZE) {
+                if (cached && File(palette, "HDR/SC16Lut8").length() == LUT_SIZE &&
+                    File(lmt, "CWCM16Lut0").isFile
+                ) {
                     return activate(base, setting, palette, odt, "cached")
                 }
 
                 base.deleteRecursively()
-                listOf(setting, odt).forEach { it.mkdirs() }
+                base.mkdirs()
 
-                // 1) 提取包里的配置文件（setting/*.ini、palette/HDR|SDR/SC16Lut0..8）原样铺开
+                // 1) 先把**设备原厂整份 basictone** 拷过来（lmt / odt / setting / setting_dolby / vig）。
+                //    大师模式的色彩矩阵在 lmt、抖动表在 setting/Ditherout，缺一样预览就会发灰。
+                copyTree(File(ODM), base)
+
+                // 2) 再把提取包里的东西盖上去：palette/HDR|SDR/SC16Lut0..8 + setting/*.ini。
+                //    palette 是本机原厂完全没有的（调色盘就靠它）；setting 也必须用提取包那份 ——
+                //    SimTool_Palette_Photo_Normal/Portrait/Night.ini、SimTool_Preview_Palette_Normal.ini
+                //    只有提取包里有，原厂 setting 直接让 native 崩（processV3 SIGSEGV）。
+                //    只想用原厂 setting 做实验：setprop persist.camunlock.palette.device_setting 1。
+                val deviceSetting = Adapt.propOn("persist.camunlock.palette.device_setting")
                 val info = getModuleApplicationInfo()
                 var extracted = 0
                 ZipFile(info.sourceDir).use { zip ->
                     zip.entries().toList()
                         .filter { !it.isDirectory && it.name.startsWith(ASSET_ROOT) }
+                        .filter { entry ->
+                            !deviceSetting ||
+                                !entry.name.substring(ASSET_ROOT.length).startsWith("setting/")
+                        }
                         .forEach { entry ->
                             val dst = File(base, entry.name.substring(ASSET_ROOT.length))
                             dst.parentFile?.mkdirs()
@@ -1149,8 +1216,7 @@ class CameraPaletteModule : XposedModule() {
                         }
                 }
 
-                // 2) ODT 是 12 MB 的二进制，机器上已经有同一份，直接拷现成的
-                copyDir(File("$ODM/odt"), odt)
+                // 3) ODT 补齐：原厂只有 ODT_Photo 时给 _Pre 也来一份（历史坑）
                 val pre = File(odt, "ODT_Pre")
                 val photo = File(odt, "ODT_Photo")
                 if (!pre.isFile && photo.isFile) photo.copyTo(pre, overwrite = true)
@@ -1160,6 +1226,13 @@ class CameraPaletteModule : XposedModule() {
                 if (hdr.length() != LUT_SIZE || sdr.length() != LUT_SIZE) {
                     log("deploy aborted: HDR=${hdr.length()} SDR=${sdr.length()} files=$extracted")
                     return false
+                }
+                if (!File(lmt, "CWCM16Lut0").isFile) {
+                    log("deploy aborted: lmt 没拷到（$ODM/lmt）")
+                    return false
+                }
+                if (!File(setting, "Ditherout").exists()) {
+                    log("WARN: setting/Ditherout 缺失，大师模式可能发灰")
                 }
 
                 stamp.writeText(EXTRACT)
@@ -1196,6 +1269,20 @@ class CameraPaletteModule : XposedModule() {
         }
     }
 
+    /** 递归复制整棵目录（basictone 里 setting 下还有 Ditherout/FromXml/TriggerBIN 子目录）。 */
+    private fun copyTree(src: File, dst: File) {
+        val children = src.listFiles() ?: return
+        children.forEach { f ->
+            val target = File(dst, f.name)
+            if (f.isDirectory) {
+                target.mkdirs()
+                copyTree(f, target)
+            } else {
+                runCatching { f.copyTo(target, overwrite = true) }
+            }
+        }
+    }
+
     private fun currentApplication(): Application? = runCatching {
         val at = Class.forName("android.app.ActivityThread")
         val thread = at.getMethod("currentActivityThread").invoke(null)
@@ -1204,9 +1291,10 @@ class CameraPaletteModule : XposedModule() {
 
     private fun logOnce(msg: String) {
         synchronized(logged) {
-            if (logged.size < 200 && logged.add(msg)) log(msg)
+            if (logged.size < 500 && logged.add(msg)) log(msg)
         }
     }
 
-    private fun log(msg: String) = log(Log.INFO, TAG, msg)
+    /** 所有 hook 日志都走 Adapt：logcat 一份、相机私有目录 adapt.log 一份。 */
+    private fun log(msg: String) = Adapt.info(msg)
 }
