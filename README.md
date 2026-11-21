@@ -309,30 +309,49 @@ CI（`.github/workflows/build.yml`）：
      （`Resources$NotFoundException: String resource ID #0x0`），必须是 `e()` 出来的小整数。
 
   3. **能显示，但点进去会闪退** —— 所以现在**没有**把 POP 留在模式数据里
-     （`mode_data.db` 已回原厂 19 行）。原因见下面「POP 闪退的三道门」。
+     （`mode_data.db` 已回原厂 19 行）。原因见下面「POP 闪退全景：6 层」。
      造库/换库工具：`_tools/make_pop_bar_db.py`、`_tools/dev/apply_safe_db.sh`。
 
   4. **native 依赖**：换上了 Reno17p 的 `libBasicTonePhoto.so`（591,552 B）。
      原厂那颗 `palette` 相关符号是 **0 个**，Reno 版有 **6 个** —— POP/调色盘走 BasicTone
      时就是靠它。已进模块 `payload/lib64/`，`post-fs-data.sh` 里绑定。
 
-  **POP 闪退的三道门（2026-11-21 逐层查清，前两道已通）**
+  **POP 闪退全景：6 层，已修 5 层（2026-11-21 逐层查清）**
 
   | # | 卡点 | 证据 | 状态 |
   |---|---|---|---|
   | 1 | 模式工厂 `cm.x3.a("retroCamera")` 先查 `CameraConfig.getConfigBooleanValue("com.oplus.feature.retro.camera.support")`，false 就 `return null` | 切模式动画结束后 `CameraUIManager.qh` 里 `BaseMode.Vi()` NPE | **已修**：这个一参方法**不经过**三参 `d(...)`，必须单独 hook；修完 POP 模式类 `em.a2` 能正常 new |
-  | 2 | 模式拿到的 cameraId 是 Reno 的 **12**（`za.z0.B()` 就是 `return this.v;`），本机只枚举 0..5 | `CameraManager.E4(12)` → `cm.a4.i(12)` 返回 null → `lm.i.s(PreviewProcessor)` 里 `Objects.requireNonNull` NPE | 加了三处兜底 hook（越界折回 0、E4 取不到回落 0），但见第 3 条 |
-  | 3 | retro 模式根本没打开过摄像头 | 整个切换过程 `CameraService::connect` 只有启动时那次 camera ID 0；同一刻 `E4(0)` 也是 null；改 `retro_camera_case.preview`（rear_sat→rear_main）、补 `mode_cameraType_sensor_number` 都不改变那个 12 | **未通**，不在 Java 层 |
+  | 2 | 模式拿到的 cameraId 是 Reno 的 **12**（`za.z0.B()` 就是 `return this.v;`），本机只枚举 0..5 | `CameraManager.E4(12)` → `cm.a4.i(12)` 返回 null → `lm.i.s(PreviewProcessor)` 里 `Objects.requireNonNull` NPE | **已修**：越界折回 0 + `E4` 取不到回落 |
+  | 3 | `za.s.b(logicId, modeName)` 用 `key = v6.c(modeName)+"_"+unit` 取 CameraDeviceInfo，retro 的 key 本机不存在 | 同一刻 `E4(0)` 也是 null；`za.s.b(12,retroCamera)` 返回 null | **已修**：只在 mode 含 retro 时回落 `(0,"common")`（照片模式那份，命中缓存） |
+  | 4 | unit.sdk 的 `ModeFactory.createMode` 只认 `photo_mode`/`retro_camera_mode`/`master_video_mode`…，不认 APK 的 tag | `IllegalArgumentException: illegal mode name when createMode!`（`CameraUnitControl` 线程） | **已修**：`getMode` 失败才翻译（全量 tag→mode 名） |
+  | 5 | `GLES20Canvas.k0`（反相遮罩 shader）只在 `CommonUtil.isSupportSquareScalableTorch()` 为 true 时创建，`r0(RectF,…)` 却无条件 `k0.s()` | `NullPointerException: gl.x0.s()`（`PreviewGLThread`） | **已修**：`r0` 入口发现 k0 为空就按同两个 shader 资源补建 |
+  | 5b | `Lut3dDataManager.e` 把长度异常的 `[I` 传给 `CombineLutHelper.process` | native `SIGSEGV`，栈顶 `libCombineLutJni.processV3` → memcpy | **已修**：retro 模式让 `e()` 返回 false，跳过 CombineLut |
+  | 6 | POP 自绘 View 为 null | `NullPointerException: void yi.b0.l(int)`，`cj.i.run` ← `ScheduledRunnable`（`yi.b0 extends View`，带 Paint/LinearGradient/ValueAnimator） | **未修**，下一步 |
 
-  第 3 条的 12 出自 unit.sdk（`JsonParser` / `CameraUnitClient`）按 Reno 的单元模型算出来的产物。
-  下一步只有两条路：hook 单元模型的产物（`cm/j5` / `cm/a4` 的构造），
-  或者走 native（`libAlgoInterface.so` 三处 NOP + 路径重映射，参考 OmniCam-Muse 的 Reno16 移植）。
+  修到第 6 层时 hook 日志（说明前 5 层真的过了）：
+
+  ```
+  gl.k0 为空 → 已补建反相遮罩 shader（2131755311 / 2131755080）
+  Lut3dDataManager.e 跳过（mode=retroCamera/retroCamera, l.size=1）
+  ModeFactory.getMode(masterVideo) 非法 → master_video_mode
+  za.s.b(12,retroCamera)=null → 回落 (0,common) → za.i1
+  ```
+
+  **POP 的效果配置在 /odm 且不能简单 bind**：`libAlgoInterface.so` 里硬编码
+  `/odm/etc/camera/basictone/setting_Retro`（还有 `retro_filter_intensity` /
+  `retro_fish_eye_enable` / `retroFilterLightflowTimeStep`），本机原厂 basictone 没有这个目录。
+  实测把 `basictone` 整目录 bind 成「原厂副本 + setting_Retro」后**照片模式 native 崩**
+  （`SIGSEGV addr=0x20`，`libCombineLutJni.processV3` ← `Lut3dDataManager.e`，LUT 数组长度变 1）。
+  所以 setting_Retro 只能用 **overlayfs**（lowerdir=原厂，upperdir 只放 setting_Retro），
+  或者整份 basictone 对齐后取消 app 层 palette 重定向再重新验证人像/调色盘。
+
   只要「胶片效果」的话，`FilterGroupManager.initRetroCameraFilterGroup()` 能无条件填 9 支 retro 滤镜
   （模块已主动调用），把胶片挂到现有模式即可，不需要 retro 模式本身。
 
   完整证据链：`CameraUnlock/_tools/dev/POP_CRASH_ROOTCAUSE.md`。
   分析用的自研工具链：`_tools/dexdesc.py`、`_tools/dexkit.py`、`_tools/dexcls.py`、
-  `_tools/dumpclass.ps1`（自动挑 dex → 设备 dexdump → 只拉目标类片段）。
+  `_tools/dexat.py`、`_tools/dexstrs.py`、`_tools/dumpclass.ps1`
+  （自动挑 dex → 设备 dexdump → 只拉目标类片段）。
 - **鲜活 / 节日 / 庆典**：LUT（`vibe/festival/ceremony.rgba.bin`）在两台机器固件里都不存在，
   所以做成开关、默认关，开了只多出条目不会有效果。
 - **7.013.60 没有 POP 参数面板**（`enterPopProfessionalMode` 只在 7.016.29 里）。

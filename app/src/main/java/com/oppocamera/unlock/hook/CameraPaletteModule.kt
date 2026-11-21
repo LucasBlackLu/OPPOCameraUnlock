@@ -228,6 +228,9 @@ class CameraPaletteModule : XposedModule() {
     @Volatile private var decodedOnce = false
 
     @Volatile private var deployed = false
+
+    /** 当前模式 tag（"common" / "retroCamera" …），由 fm.k.i hook 维护 */
+    @Volatile private var currentModeTag: String = "common"
     @Volatile private var settingPath: String? = null
     @Volatile private var palettePath: String? = null
     @Volatile private var odtPath: String? = null
@@ -251,6 +254,11 @@ class CameraPaletteModule : XposedModule() {
         runCatching { hookComposition(cl) }.onFailure { log("hookComposition: $it") }
         runCatching { hookAdapterIdFallback(cl) }.onFailure { log("hookAdapterIdFallback: $it") }
         runCatching { hookCameraIdRemap(cl) }.onFailure { log("hookCameraIdRemap: $it") }
+        runCatching { hookCameraInfoFallback(cl) }.onFailure { log("hookCameraInfoFallback: $it") }
+        runCatching { hookProducerModeName(cl) }.onFailure { log("hookProducerModeName: $it") }
+        runCatching { hookCurrentMode(cl) }.onFailure { log("hookCurrentMode: $it") }
+        runCatching { hookLutGuard(cl) }.onFailure { log("hookLutGuard: $it") }
+        runCatching { hookGlMaskShader(cl) }.onFailure { log("hookGlMaskShader: $it") }
         if (TRACE_PREVIEW) runCatching { tracePreview(cl) }.onFailure { log("tracePreview: $it") }
         if (TRACE_INSPIRATION) runCatching { traceInspiration(cl) }.onFailure { log("traceInspiration: $it") }
 
@@ -373,6 +381,314 @@ class CameraPaletteModule : XposedModule() {
             0
         }
         log("za.z0.B() 已挂（越界 cameraId 折回 0）")
+    }
+
+    /**
+     * POP 真正卡住的地方（dexdump 原文）：
+     *
+     *     // cm.a4.i(int)
+     *     String name = this.a.i();                    // cm.j5.i() = 当前模式 tag
+     *     if (name == null) name = this.C0.l();        // fm.k.l()
+     *     return za.s.b(id, name);
+     *
+     *     // za.s.b(int logicId, String modeName)
+     *     unit = za.s.c(logicId);                      // logicId → 单元名（rear_main / rear_sat …）
+     *     if (unit == null) unit = "rear_main";
+     *     key  = com.oplus.camera.v6.c(modeName) + "_" + unit;   // 例如 photo_rear_main
+     *     info = za.s.g.get(key);                                  // 静态 HashMap 缓存
+     *     if (info == null) info = CameraUnitClient.getCameraDeviceInfo(...);
+     *     return info;                                 // ← retro 组合本机不存在 → null
+     *
+     * 也就是说：retro 模式下 modeName="retroCamera" 算出来的 key（如 `retro_rear_main`）
+     * 在本机这台机型的 CameraDeviceInfo 里没有，于是返回 null，
+     * PreviewProcessor 拿空适配器 NPE。
+     *
+     * 兜底：拿不到就按「照片模式」（logicId=0, modeName="common"）再要一次 ——
+     * 那份 CameraDeviceInfo 是启动时就建好并缓存在 za.s.g 里的，一定命中。
+     * 开关：persist.camunlock.retro.caminfo，默认开；失败不影响其它模式。
+     */
+    private fun hookCameraInfoFallback(cl: ClassLoader) {
+        val cls = runCatching { cl.loadClass("za.s") }.getOrNull()
+        if (cls == null) {
+            log("WARN: za.s not found")
+            return
+        }
+        val m = cls.declaredMethods.firstOrNull {
+            it.name == "b" && it.parameterTypes.size == 2 &&
+                it.parameterTypes[0] == java.lang.Integer.TYPE &&
+                it.parameterTypes[1] == String::class.java
+        }
+        if (m == null) {
+            log("WARN: za.s.b(I,String) not found")
+            return
+        }
+        hook(m).intercept { chain ->
+            val r: Any? = chain.proceed()
+            if (r != null) return@intercept r
+            // 只在 retro 这条链上兜底：正常模式的 null 可能表示「还没建好」，
+            // 强行换成照片模式的 info 会让相机以为没相机而退出（踩过）。
+            val mode = chain.args.getOrNull(1) as? String
+            if (mode == null || !mode.contains("retro", true)) return@intercept r
+            if (!retroCameraInfoFallback()) return@intercept r
+            val id = chain.args.getOrNull(0) as? Int
+            val args = chain.args.toMutableList()
+            args[0] = 0
+            args[1] = "common"
+            val fb: Any? = runCatching { chain.proceed(args.toTypedArray()) as Any? }.getOrNull()
+            logOnce("za.s.b($id,$mode)=null → 回落 (0,common) → " + (fb?.javaClass?.name ?: "null"))
+            fb
+        }
+        log("za.s.b 已挂（拿不到 CameraDeviceInfo 就回落到照片模式）")
+    }
+
+    private fun retroCameraInfoFallback(): Boolean = synchronized(switchCache) {
+        switchCache.getOrPut("retrocaminfo") {
+            runCatching {
+                val c = Class.forName("android.os.SystemProperties")
+                val g = c.getMethod("getBoolean", String::class.java, java.lang.Boolean.TYPE)
+                g.invoke(null, "persist.camunlock.retro.caminfo", true) as Boolean
+            }.getOrDefault(true)
+        }
+    }
+
+    /**
+     * APS（unit.sdk）侧的 ModeFactory 只认「配置里的模式名」，APK 侧传过来的却是「tag」。
+     *
+     * `ModeFactory.createMode(String)` 的字符串常量里有 **retro_camera_mode**（还有
+     * photo_mode / video_mode / portrait_mode …共 41 个），但没有 `retroCamera`，
+     * 所以 retro 模式配置相机设备时抛：
+     *
+     *     java.lang.IllegalArgumentException: illegal mode name when createMode!
+     *         at com.oplus.ocs.camera.producer.mode.ModeFactory.getMode(ModeFactory.java:29)
+     *         at com.oplus.ocs.camera.producer.ProducerImpl.configure(ProducerImpl.java:187)
+     *
+     * 也就是说 unit.sdk 完整支持 retro，只是命名空间不同：
+     *     APK 层 tag      : retroCamera
+     *     unit.sdk mode 名: retro_camera_mode
+     * 这里只在这一个边界上翻译，别的名字原样透传。
+     */
+    private fun hookProducerModeName(cl: ClassLoader) {
+        val cls = runCatching {
+            cl.loadClass("com.oplus.ocs.camera.producer.mode.ModeFactory")
+        }.getOrNull()
+        if (cls == null) {
+            log("WARN: ModeFactory not found")
+            return
+        }
+        val m = cls.declaredMethods.firstOrNull {
+            it.name == "getMode" && it.parameterTypes.size == 1 &&
+                it.parameterTypes[0] == String::class.java
+        }
+        if (m == null) {
+            log("WARN: ModeFactory.getMode(String) not found")
+            return
+        }
+        hook(m).intercept { chain ->
+            val name = chain.args.getOrNull(0) as? String
+            try {
+                chain.proceed()
+            } catch (e: IllegalArgumentException) {
+                // 只有原名字建不出来时才翻译，正常名字一次都不用重试
+                val mapped = sdkModeName(name) ?: throw e
+                logOnce("ModeFactory.getMode($name) 非法 → $mapped")
+                val args = chain.args.toMutableList()
+                args[0] = mapped
+                chain.proceed(args.toTypedArray())
+            }
+        }
+        log("ModeFactory.getMode 已挂（tag → unit.sdk mode 名，失败才翻译）")
+    }
+
+    /**
+     * APK 的 tag → unit.sdk 的模式名。
+     *
+     * `ModeFactory.createMode` 里的字符串常量是 `photo_mode` / `video_mode` /
+     * `retro_camera_mode` / `master_video_mode` …（41 个），没有 APK 侧那套
+     * `common` / `commonVideo` / `retroCamera` / `masterVideo` 的 tag。
+     * 实测中 `masterVideo` 和 `retroCamera` 都会被直接传进来，所以这张表按
+     * `mode_data.db` 里的 tag 全量对齐，避免下次换个模式又炸。
+     */
+    private fun sdkModeName(tag: String?): String? = when (tag) {
+        "retroCamera" -> "retro_camera_mode"
+        "masterVideo" -> "master_video_mode"
+        "highPixel" -> "high_pixel_mode"
+        "aiScenery" -> "ai_scenery_mode"
+        "starVideo" -> "star_video_mode"
+        "underWater" -> "under_water_mode"
+        "superText" -> "super_text_mode"
+        "longExposure" -> "long_exposure_mode"
+        "multiCamera" -> "multi_camera_mode"
+        "idPhoto" -> "id_photo_mode"
+        "slowVideo" -> "slowvideo_mode"
+        "fastVideo" -> "fastvideo_mode"
+        "night" -> "night_mode"
+        "portrait" -> "portrait_mode"
+        "common" -> "photo_mode"
+        "commonVideo" -> "video_mode"
+        "professional" -> "professional_mode"
+        "panorama" -> "panorama_mode"
+        "sticker" -> "sticker_mode"
+        "macro" -> "macro_mode"
+        "xpan" -> "xpan_mode"
+        "vibe" -> "vibe_mode"
+        else -> null
+    }
+
+    /**
+     * 记录当前模式 tag。`fm.k.i(String tag, int, int, boolean, boolean)` 是真正的切换入口。
+     * `cm.x3.a` 只在首次创建模式时调用（之后走 HashMap 缓存），拿它记模式会一直停在旧值。
+     */
+    private fun hookCurrentMode(cl: ClassLoader) {
+        val cls = runCatching { cl.loadClass("fm.k") }.getOrNull()
+        if (cls == null) {
+            log("WARN: fm.k not found")
+            return
+        }
+        val m = cls.declaredMethods.firstOrNull {
+            it.name == "i" && it.parameterTypes.size == 5 &&
+                it.parameterTypes[0] == String::class.java
+        }
+        if (m == null) {
+            log("WARN: fm.k.i(String,...) not found")
+            return
+        }
+        hook(m).intercept { chain ->
+            (chain.args.getOrNull(0) as? String)?.let {
+                if (it.isNotEmpty()) currentModeTag = it
+            }
+            chain.proceed()
+        }
+        log("fm.k.i 已挂（记录当前模式 tag）")
+    }
+
+    /**
+     * POP 模式下 `Lut3dDataManager.e(int,int,String)` 会把 `null`（或尺寸不对）的
+     * `[I` 传给 `CombineLutHelper.process`，native `libCombineLutJni.processV3`
+     * 里 memcpy 直接段错误（tombstone 栈：libc __memcpy_aarch64_simd ←
+     * libCombineLutJni.processV3 ← CombineLutHelper.process ← Lut3dDataManager.e
+     * ← PreviewRenderer）。
+     *
+     * 这里在 retro 模式下让 `e()` 直接返回 false（= 本轮不更新 LUT），
+     * 预览退回不带 3D LUT 的直通路径，先保证模式本身可用。
+     * 开关：persist.camunlock.retro.lutguard，默认开。
+     */
+    private fun hookLutGuard(cl: ClassLoader) {
+        val cls = runCatching {
+            cl.loadClass("com.oplus.camera.common.utils.Lut3dDataManager")
+        }.getOrNull()
+        if (cls == null) {
+            log("WARN: Lut3dDataManager not found")
+            return
+        }
+        val m = cls.declaredMethods.firstOrNull {
+            it.name == "e" && it.parameterTypes.size == 3 &&
+                it.parameterTypes[0] == java.lang.Integer.TYPE &&
+                it.parameterTypes[1] == java.lang.Integer.TYPE &&
+                it.parameterTypes[2] == String::class.java
+        }
+        if (m == null) {
+            log("WARN: Lut3dDataManager.e(II,String) not found")
+            return
+        }
+        val fL = runCatching { cls.getDeclaredField("l").apply { isAccessible = true } }.getOrNull()
+        hook(m).intercept { chain ->
+            // 第三参就是模式名（dexdump 里和 "vibe" 比的那一个），比全局变量可靠：
+            // 启动恢复模式时不一定经过 fm.k.i。
+            val argMode = chain.args.getOrNull(2) as? String
+            val isRetro = isRetroName(argMode) || isRetroName(currentModeTag)
+            if (!retroLutGuard() || !isRetro) return@intercept chain.proceed()
+            val n = runCatching { (fL?.get(chain.thisObject) as? IntArray)?.size }.getOrNull()
+            logOnce("Lut3dDataManager.e 跳过（mode=$argMode/$currentModeTag, l.size=$n）")
+            false
+        }
+        log("Lut3dDataManager.e 已挂（retro 模式跳过 CombineLut）")
+    }
+
+    private fun isRetroName(s: String?): Boolean =
+        s != null && (s.contains("retro", true) || s.contains("RetroCamera", false))
+
+    private fun retroLutGuard(): Boolean = synchronized(switchCache) {
+        switchCache.getOrPut("retrolutguard") {
+            runCatching {
+                val c = Class.forName("android.os.SystemProperties")
+                val g = c.getMethod("getBoolean", String::class.java, java.lang.Boolean.TYPE)
+                g.invoke(null, "persist.camunlock.retro.lutguard", true) as Boolean
+            }.getOrDefault(true)
+        }
+    }
+
+    /**
+     * POP 进模式后崩在 GL 线程：
+     *
+     *     NullPointerException: com.oplus.camera.common.gl.x0.s() on a null object reference
+     *         at com.oplus.camera.common.gl.o.r0(GLES20Canvas.java:120)
+     *         at dq.i1.vh(CameraPreviewUI.java:628)
+     *         at ln.l.a1(PreviewRenderer.java:329)
+     *
+     * `GLES20Canvas.<init>` 里 `k0` 是**有条件**创建的（dexdump 原文）：
+     *
+     *     k0 = null;
+     *     ...
+     *     if (CommonUtil.isSupportSquareScalableTorch()) {
+     *         k0 = new x0(R.raw.texture_vertex_shader_inverse_mask,
+     *                     R.raw.draw_inverse_mask_shader);       // 反相遮罩 shader
+     *     }
+     *
+     * 而绘制路径 `r0(RectF, float, float[], float, float)` 无条件 `k0.s()`。
+     * 本机 `isSupportSquareScalableTorch()` 为 false → k0 为 null → POP 的预览
+     * 特效/遮罩一走这条路就崩（照片模式不画遮罩，所以平时看不到）。
+     *
+     * 不去改那个能力判断（会影响手电筒 UI），只在 `r0` 入口发现 k0 为空时
+     * 按同样的两个 shader 资源补建一份。开关：persist.camunlock.gl.mask，默认开。
+     */
+    private fun hookGlMaskShader(cl: ClassLoader) {
+        val oCls = runCatching { cl.loadClass("com.oplus.camera.common.gl.o") }.getOrNull()
+        val x0Cls = runCatching { cl.loadClass("com.oplus.camera.common.gl.x0") }.getOrNull()
+        val rCls = runCatching { cl.loadClass("com.oplus.camera.common.R\$raw") }.getOrNull()
+        if (oCls == null || x0Cls == null || rCls == null) {
+            log("WARN: gl.o / gl.x0 / R\$raw 不全，跳过遮罩 shader 补建")
+            return
+        }
+        val vs = runCatching { rCls.getField("texture_vertex_shader_inverse_mask").getInt(null) }.getOrNull()
+        val fs = runCatching { rCls.getField("draw_inverse_mask_shader").getInt(null) }.getOrNull()
+        val ctor = runCatching {
+            x0Cls.getConstructor(java.lang.Integer.TYPE, java.lang.Integer.TYPE)
+        }.getOrNull()
+        val k0 = runCatching { oCls.getDeclaredField("k0").apply { isAccessible = true } }.getOrNull()
+        if (vs == null || fs == null || ctor == null || k0 == null) {
+            log("WARN: 遮罩 shader 资源/构造/字段缺失 vs=$vs fs=$fs ctor=$ctor k0=$k0")
+            return
+        }
+        val m = oCls.declaredMethods.firstOrNull {
+            it.name == "r0" && it.parameterTypes.size == 4 &&
+                it.parameterTypes[0] == android.graphics.RectF::class.java
+        }
+        if (m == null) {
+            log("WARN: gl.o.r0(RectF,...) not found")
+            return
+        }
+        hook(m).intercept { chain ->
+            if (glMaskEnabled()) {
+                runCatching {
+                    if (k0.get(chain.thisObject) == null) {
+                        k0.set(chain.thisObject, ctor.newInstance(vs, fs))
+                        logOnce("gl.k0 为空 → 已补建反相遮罩 shader（$vs / $fs）")
+                    }
+                }.onFailure { log("gl.k0 补建失败: $it") }
+            }
+            chain.proceed()
+        }
+        log("GLES20Canvas.r0 已挂（k0 遮罩 shader 兜底）")
+    }
+
+    private fun glMaskEnabled(): Boolean = synchronized(switchCache) {
+        switchCache.getOrPut("glmask") {
+            runCatching {
+                val c = Class.forName("android.os.SystemProperties")
+                val g = c.getMethod("getBoolean", String::class.java, java.lang.Boolean.TYPE)
+                g.invoke(null, "persist.camunlock.gl.mask", true) as Boolean
+            }.getOrDefault(true)
+        }
     }
 
     /**
