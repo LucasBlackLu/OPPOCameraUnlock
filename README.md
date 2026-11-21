@@ -94,7 +94,7 @@ hook 目标全部登记在 `Adapt.kt`：**id + 一句话说明 + 候选类名/�
 
 ```
 设备（最终）：model=PLJ110 market=OPPO Find X9 · ColorOS=PLJ110_17.0.0.101(CN01) (API 37) · 相机=7.006.121
-模块（最终）：com.oppocamera.unlock 2.0.0
+模块（最终）：com.oppocamera.unlock 2.1.0
 文件 胶片 LUT：琥珀：/odm/etc/camera/meishe_lut/hu_po.bin → 824183 B
 文件 unit.sdk（滤镜清单）：/product/framework/com.oplus.camera.unit.sdk.jar → 5363803 B
 适配自检：HIT 19 / MISS 1，耗时 88 ms

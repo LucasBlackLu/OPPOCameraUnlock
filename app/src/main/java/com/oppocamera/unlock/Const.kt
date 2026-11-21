@@ -2,7 +2,7 @@ package com.oppocamera.unlock
 
 /** 纯常量。仓库 OPPOCameraUnlock，包名 com.oppocamera.unlock。 */
 object Const {
-    const val VERSION = "2.0.0"
+    const val VERSION = "2.1.0"
     const val GITHUB = "https://github.com/LucasBlackLu/OPPOCameraUnlock"
     const val RELEASES = "$GITHUB/releases/latest"
 
