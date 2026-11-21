@@ -74,7 +74,7 @@ fun SettingsPage(connected: Boolean, scoped: Boolean, root: Boolean) {
                 )
                 PuiListRow(
                     icon = PuiIcon.Heart,
-                    title = "酷安 · 黑夜中的守护者",
+                    title = "酷安",
                     subtitle = "关注我",
                     showChevron = true,
                     showDivider = false,
