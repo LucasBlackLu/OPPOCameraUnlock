@@ -81,9 +81,12 @@ ClassLoader 当 parent 动态加载。
 
 ### 日志（诊断与导出）
 
-- 文件：`/data/user/0/com.oplus.camera/files/camunlock/adapt.log`（logcat 里 tag `CamUnlock`）。
-- 设置页「日志」区只留一个 **导出日志**：复制到 `/sdcard/Download/camunlock-adapt-*.log`
-  （自检表、滤镜组内容、UI 换图明细全在里面），导出后直接分享就行。
+- 本体：`/data/user/0/com.oplus.camera/files/camunlock/adapt.log`（logcat 里 tag `CamUnlock`）。
+- **导出位置固定为单独文件夹**：`Download/CamUnlock/camunlock-adapt.log`，**相机每次启动自动刷新**
+  （由相机进程里的模块发布 —— 设置应用 su 到 ksu 域写不了 /sdcard，也没有「所有文件访问」，
+  「应用 cp 到 sdcard」这条路走不通）。
+- 设置页「日志」区只有一个 **导出日志**：查询 MediaStore 拿到 content URI 后直接弹分享面板；
+  索引还没建好时也会把路径告诉你，文件管理器随时能取。
 
 ### 适配与日志（给换机型用的）
 
