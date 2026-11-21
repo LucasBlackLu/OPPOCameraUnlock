@@ -82,6 +82,58 @@ object Adapt {
         hit.forEach { info("  HIT  ${it.id.padEnd(18)} → ${it.where}") }
         miss.forEach { warn("  MISS ${it.id.padEnd(18)} → ${it.miss}（${it.desc}）") }
         info("===== CamUnlock 适配自检 结束 =====")
+        publish()
+    }
+
+    /**
+     * 把 adapt.log 再发布一份到 `Download/CamUnlock/`（**单独的文件夹**，文件管理器直接能拿）。
+     *
+     * 为什么是模块做而不是设置应用做：设置应用读相机私有日志要 root，
+     * 而这台机器 KernelSU 的 root 域 `u:r:ksu:s0` 对 /sdcard 没有写权限、
+     * 应用自己也没有「所有文件访问」，所以「应用 su cp 到 sdcard」这条路必然失败。
+     * 模块跑在相机进程里，本身就有写自己目录/外部存储的权限。
+     *
+     * 先试直接写文件，不行再走 MediaStore（scoped storage 正路）。
+     */
+    fun publish() {
+        val app = currentApplication() ?: return
+        val dir = logDir() ?: return
+        val file = File(dir, LOG_NAME)
+        if (!file.isFile) return
+        val name = "camunlock-adapt.log"
+
+        val direct = runCatching {
+            val target = File("/sdcard/Download/CamUnlock")
+            if (!target.isDirectory && !target.mkdirs()) return@runCatching false
+            val out = File(target, name)
+            file.copyTo(out, overwrite = true)
+            // 让 MediaStore 收一条索引：别的应用（设置应用）才能查到 content:// URI 去分享
+            runCatching {
+                android.media.MediaScannerConnection.scanFile(
+                    app, arrayOf(out.absolutePath), arrayOf("text/plain"), null
+                )
+            }
+            true
+        }.getOrDefault(false)
+        if (direct) {
+            info("日志已发布：/sdcard/Download/CamUnlock/$name")
+            return
+        }
+
+        val published = runCatching {
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
+                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+                put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Download/CamUnlock")
+            }
+            val resolver = app.contentResolver
+            val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: return@runCatching false
+            resolver.openOutputStream(uri)?.use { out -> out.write(file.readBytes()) }
+            true
+        }.getOrDefault(false)
+        if (published) info("日志已发布（MediaStore）：Download/CamUnlock/$name")
+        else warn("日志发布失败：/sdcard/Download/CamUnlock 写不进去")
     }
 
     // ---------------------------------------------------------------- 目标解析
@@ -167,6 +219,16 @@ object Adapt {
         val mod = runCatching { pm.getPackageInfo("com.oppocamera.unlock", 0).versionName }.getOrNull()
         info("设备（最终）：$device")
         info("模块（最终）：com.oppocamera.unlock $mod")
+
+        // 启动几秒后把日志发布到 Download/CamUnlock/（那时 Application 在，且日志已经攒了一些）
+        runCatching {
+            val t = Thread {
+                runCatching { Thread.sleep(5000) }
+                runCatching { publish() }
+            }
+            t.isDaemon = true
+            t.start()
+        }
     }
 
     /** 机型 + 系统 + 相机版本，适配新机型时先看这一行。 */

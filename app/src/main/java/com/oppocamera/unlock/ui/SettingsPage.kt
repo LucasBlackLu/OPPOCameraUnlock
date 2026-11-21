@@ -170,13 +170,13 @@ fun SettingsPage(connected: Boolean, scoped: Boolean, root: Boolean) {
                 PuiListRow(
                     icon = PuiIcon.Download,
                     title = "导出日志",
-                    subtitle = "复制到 /sdcard/Download/camunlock-adapt-*.log（自检表 + 滤镜组 + UI 换图都在这）",
+                    subtitle = "已发布到 Download/CamUnlock/（点一下会调起分享，也可用文件管理器直接取）",
                     trailingText = if (lines >= 0) "$lines 行" else null,
                     showChevron = true,
                     showDivider = false,
                     onClick = {
                         thread {
-                            val r = Shell.exportAdaptLog()
+                            val r = Shell.exportAdaptLog(ctx)
                             lines = Shell.adaptLogLines()
                             toast(if (r.ok) "已导出：${r.out}" else "导出失败：${r.out}")
                         }
