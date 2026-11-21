@@ -16,6 +16,15 @@ LOG="palette_port"
 
 log() { echo "$LOG: $*"; }
 
+# 0) 最小替换模式：只要 $MODDIR/minimal 在，本模块**一个系统文件都不换**。
+#    调色盘本身不需要动 /odm：LSPosed 模块会把 palette/setting 部署到相机私有目录，
+#    再改 CombineLutHelper.init 的路径参数；本机 /odm 上原有的 lmt/odt 照样读。
+#    这个模式下只会少「胶片 135 支 LUT / 琥珀清透滤镜名 / Meishe 引擎」这几项。
+if [ -f "$MODDIR/minimal" ]; then
+  log "minimal: 不替换任何 /odm、/product 文件（只有 LSPosed 模块生效）"
+  exit 0
+fi
+
 chcon_tree() {
   chcon -R u:object_r:vendor_configs_file:s0 "$1" 2>/dev/null
 }

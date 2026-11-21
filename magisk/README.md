@@ -5,6 +5,22 @@
 
 配套的 LSPosed 模块（hook 层）在仓库根目录：`com.oppocamera.unlock`。
 
+## 最小替换模式（推荐先这样试）
+
+只要模块目录里有 `minimal` 这个空文件，本模块**一个 /odm、/product 文件都不换**：
+
+```sh
+su -c "touch /data/adb/modules/oppo_camera_port/minimal"
+su -c "stop; start"
+```
+
+这时只有 LSPosed 模块生效：调色盘靠它把 palette/setting 部署到相机私有目录 + 改
+`CombineLutHelper.init` 的路径参数，**系统分区一个字节都不动**（`/odm` 上原有的 lmt/odt 照读）。
+代价是少了「胶片 135 支 LUT」「琥珀/清透滤镜名」「Meishe 引擎」这三项 —— 它们必须换 `/odm` 文件。
+
+`payload/apk/` 里的相机整包**默认不打进 zip**（`build_module.py` 会跳过），
+所以刷模块不会替换你本机的相机；确实需要整包时用 `python magisk/build_module.py --with-apk`。
+
 ## 这模块干什么
 
 把 Reno 17 Pro 固件里的相机资源补到本机。**只做文件替换**（hook 和相机重启由 LSPosed 模块负责）。

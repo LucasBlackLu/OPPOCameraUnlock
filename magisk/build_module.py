@@ -5,6 +5,10 @@
     module.prop
     post-fs-data.sh / service.sh / uninstall.sh / customize.sh
     payload/...
+
+payload/apk/ 默认**不打进 zip**：那是整包相机 APK，放进去就等于替换本机相机。
+要那套「相机整包」的行为，自己把 OplusCamera.apk + version.txt 放进模块目录再用
+--with-apk 打包。
 """
 import os
 import sys
@@ -13,6 +17,7 @@ import zipfile
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MOD = os.path.join(BASE, 'magisk_module')
 OUT = os.path.join(BASE, 'out', 'oppo_camera_port_reno17p.zip')
+WITH_APK = '--with-apk' in sys.argv
 
 FILES = [
     'module.prop',
@@ -41,9 +46,14 @@ with zipfile.ZipFile(OUT, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for f in sorted(fn):
             full = os.path.join(dp, f)
             rel = os.path.relpath(full, MOD).replace('\\', '/')
+            if not WITH_APK and rel.startswith('payload/apk/'):
+                continue
             z.write(full, rel)
             n += 1
             total += os.path.getsize(full)
+
+if not WITH_APK:
+    print('提示：payload/apk/ 未打进 zip（想替换相机整包就用 --with-apk）')
 
 print('打包 %d 个条目 -> %s (%.1f MB)' % (n, OUT, os.path.getsize(OUT) / 1e6))
 print('payload 原始 %.1f MB' % (total / 1e6))

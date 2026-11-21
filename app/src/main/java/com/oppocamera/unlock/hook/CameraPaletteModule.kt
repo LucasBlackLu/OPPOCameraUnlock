@@ -418,6 +418,11 @@ class CameraPaletteModule : XposedModule() {
                     if (Adapt.propOn("persist.camunlock.palette.off")) {
                         return@intercept chain.proceed()
                     }
+                    // 大师 / 专业模式不注入：注入了会把大师的 tone 打平、预览发灰
+                    // （原厂相机上 A/B 实测过）。要旧行为 setprop persist.camunlock.palette.master 1。
+                    if (Adapt.isMasterMode() && !Adapt.propOn("persist.camunlock.palette.master")) {
+                        return@intercept chain.proceed()
+                    }
                     val arg5 = chain.getArg(5) as? String
                     if (arg5 == null || !arg5.contains("palette")) {
                         return@intercept chain.proceed()
@@ -475,6 +480,12 @@ class CameraPaletteModule : XposedModule() {
         } ?: return
         hook(m).intercept { chain ->
             val mode = chain.getArg(0) as? String
+            // 记下当前模式：调色盘注入要不要跳过，按它判断
+            Adapt.setMode(mode)
+            // 大师 / 专业模式保留原厂白名单（= 没有调色盘入口），别把它拉进来
+            if (Adapt.isMasterMode() && !Adapt.propOn("persist.camunlock.palette.master")) {
+                return@intercept chain.proceed()
+            }
             val on = synchronized(switchCache) {
                 switchCache.getOrPut("paletteAll") {
                     runCatching {
@@ -1169,6 +1180,8 @@ class CameraPaletteModule : XposedModule() {
                 log("WARN: currentApplication null, cannot deploy")
                 return false
             }
+            // 到这儿一定有 Application：把「设备 + 相机版本」补打一次（适配先看这行）
+            Adapt.deviceOnce(app)
             return runCatching {
                 val base = File(app.filesDir, "campalette/basictone")
                 val setting = File(base, "setting")

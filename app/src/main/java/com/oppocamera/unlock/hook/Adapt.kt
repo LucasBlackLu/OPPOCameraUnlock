@@ -46,6 +46,7 @@ object Adapt {
     @Volatile private var loader: ClassLoader? = null
     @Volatile private var startedAt = 0L
     @Volatile private var module: String? = null
+    @Volatile private var deviceLogged = false
 
     private val targets = LinkedHashMap<String, Target>()
     private val lock = Any()
@@ -153,6 +154,21 @@ object Adapt {
 
     // ---------------------------------------------------------------- 设备画像 / 文件
 
+    /**
+     * 设备画像 + 模块版本，等 Application 真的建好之后再打一次。
+     * （onPackageLoaded 阶段 ActivityThread.currentApplication() 还是 null，
+     *  相机版本读不到；而 ensureDeployed 里一定有 Application，那里调这个。）
+     */
+    fun deviceOnce(app: android.app.Application) {
+        if (deviceLogged) return
+        deviceLogged = true
+        val pm = app.packageManager
+        val cam = runCatching { pm.getPackageInfo("com.oplus.camera", 0).versionName }.getOrNull()
+        val mod = runCatching { pm.getPackageInfo("com.oppocamera.unlock", 0).versionName }.getOrNull()
+        info("设备（最终）：$device")
+        info("模块（最终）：com.oppocamera.unlock $mod")
+    }
+
     /** 机型 + 系统 + 相机版本，适配新机型时先看这一行。 */
     val device: String
         get() {
@@ -203,6 +219,26 @@ object Adapt {
 
     /** 读一个系统属性开关；默认关。 */
     fun propOn(key: String): Boolean = flag(key, false)
+
+    // ---------------------------------------------------------------- 当前模式
+
+    /** 相机当前模式 tag（由 `CommonUtil.isSupportPalette(mode)` 的调用维护）。 */
+    @Volatile private var mode: String? = null
+
+    fun setMode(tag: String?) {
+        if (!tag.isNullOrEmpty()) mode = tag
+    }
+
+    /**
+     * 大师 / 专业模式。这个模式下我们**不做 basictone 注入**：
+     * 实测（原厂 7.006.121 相机、同画面 A/B）注入后大师预览饱和度 0.026 / 亮度 87，
+     * 不注入是 0.054 / 148 —— 也就是说注入会把大师的 tone 打平、发灰。
+     * 想恢复「大师里也能调色盘」的旧行为：setprop persist.camunlock.palette.master 1。
+     */
+    fun isMasterMode(): Boolean {
+        val m = mode?.lowercase() ?: return false
+        return m.contains("professional") || m.contains("master")
+    }
 
     // ---------------------------------------------------------------- 日志
 

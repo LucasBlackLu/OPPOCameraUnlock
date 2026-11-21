@@ -1,281 +1,196 @@
-# OPPO 相机解锁（调色盘 / 胶片 / 灵感构图）
+# OPPO 相机解锁（CamUnlock）
 
-[![build](https://github.com/LucasBlackLu/OPPOCameraUnlock/actions/workflows/build.yml/badge.svg)](https://github.com/LucasBlackLu/OPPOCameraUnlock/actions/workflows/build.yml)
-[![release](https://img.shields.io/github/v/release/LucasBlackLu/OPPOCameraUnlock?include_prereleases&sort=semver)](https://github.com/LucasBlackLu/OPPOCameraUnlock/releases)
+**OPPO X9（PLJ110）的相机增强模块。** 把 Reno 17 Pro 的相机色彩资产补到本机：调色盘、胶片滤镜、
+灵感构图（AI 构图），并给后续适配别的机型留了一层可读的适配日志。
 
-把 Reno 17 Pro 的相机色彩能力搬到别的 ColorOS 机器上：**调色盘**、**胶片滤镜**、
-**灵感构图（AI 构图）**。
-
-> 本 `release` 分支是**发布线**，只放已经能用住的功能：调色盘、胶片滤镜、灵感构图。
-> **不含 POP / 实况调色盘**（`retro_camera_mode`）—— 那套试验代码留在 `main` 分支和
-> `backup/pop-wip-20261121` 分支上，需要时再取，不要往这条线里合。
-
-> 仅在 **OPPO X9（`PLJ110` / ColorOS 17 / Android 17）** 上实测可用。
+CamUnlock 由 **KernelSU / Magisk 模块**和 **LSPosed 设置应用**组成：模块通过 bind 挂载补 `/odm`
+下的相机资源，钩子在相机进程内改配置返回值、滤镜门控和取帧链路。停用模块即可完整还原。
 
 - 仓库：<https://github.com/LucasBlackLu/OPPOCameraUnlock>
 - LSPosed 模块包名：`com.oppocamera.unlock`
-- 下载：<https://github.com/LucasBlackLu/OPPOCameraUnlock/releases/latest>
-
-![图标](docs/icon-preview.png)
+- 当前只在一台机器上实测：**OPPO X9（`PLJ110` / ColorOS 17 / Android 17 / 相机 7.016.29）**
 
 ---
 
-## 一、要装两个东西
+## 功能
 
-功能是分两半实现的：**Java 层靠 hook，文件层靠 bind mount**。只装一个不会完整。
+### 调色盘
 
-| 装什么 | 干什么 | 从哪来 |
-|---|---|---|
-| **LSPosed 模块** `com.oppocamera.unlock`（本仓库代码） | 部署 LUT、改配置返回值、hook 滤镜门控、接灵感构图取帧桥、提供各类开关 | Release 里的 `com.oppocamera.unlock-*.apk` |
-| **Magisk / KernelSU 模块** `oppo_camera_port`（源码在 [`magisk/`](magisk/)） | 换掉只读分区上的文件：相机 APK、`meishe_lut`、`apk_resources` 滤镜资源、`unit.sdk.jar`、`libmsnativefilter.so` | Release 里的 `oppo_camera_port_reno17p.zip` |
+Reno 17 的调色盘是「一整套 LUT + 一条三维查表流水线」，不是单个 UI 控件。本机原厂
+`/odm/etc/camera/basictone` 里**根本没有 `palette/` 目录**，强开 feature 会在
+`libCombineLut` 里 `std::bad_alloc`。
 
-### 安装顺序
+- **做法**：LSPosed 模块把 `assets/basictone`（`palette/HDR|SDR/SC16Lut0..8` + `setting/*.ini`）
+  部署到相机私有目录 `/data/user/0/com.oplus.camera/files/campalette/basictone`，
+  再把 `CombineLutHelper.init(6 参)` 的 `arg[2]=setting`、`arg[5]=palette` 换过去。
+- **部署内容 = 设备原厂整份 basictone + 我们的 palette**：`lmt`（色彩矩阵）、`odt`、`setting_dolby`、
+  `vig`、`setting/Ditherout|FromXml|TriggerBIN` 全部从 `/odm` 递归拷过来，只加 palette
+  和那几个原厂没有的 `SimTool_Palette_*.ini`。少 `lmt` 会让大师模式预览发灰。
+- **模式白名单**：`CommonUtil.isSupportPalette(mode)` 原厂只放行 `common / portrait / night`，
+  这里 hook 成恒真（`persist.camunlock.palette.allmode`），大师模式也能调出调色盘。
+- **格子颜色**：换过 Reno 的 unit.sdk 后 `ipusdk.PaletteSeekbarColorTable` 存在，用真实现算色；
+  不存在时才退回 stub（否则格子会被 `Recipe.empty()` 画成全黑）。
 
-```sh
-# 1) LSPosed 模块
-adb install -r com.oppocamera.unlock-*.apk
-#    打开 LSPosed → 启用该模块 → 作用域勾上「相机」(com.oplus.camera)
-#    （模块已静态声明作用域，一般装完就自动勾好）
-
-# 2) Magisk / KernelSU 模块
-adb push oppo_camera_port_reno17p.zip /data/local/tmp/
-adb shell su -c "ksud module install /data/local/tmp/oppo_camera_port_reno17p.zip"
-
-# 3) 让文件层生效
-adb shell su -c "stop; start"        # 只软重启 framework
-
-# 4) 打开本应用点「重启相机」即可
-```
-
-> ⚠️ **不要整机重启**。这两台机器（exploit 注入的 root）整机重启会掉 root。
-> 软重启用 `stop; start` 或 Magisk 管理器里的「软重启」。
-
-全部文件投递都是 **bind mount**：`/odm`、`/product` 原文件一个都不改，`uninstall.sh` 里逐个 `umount` 即可回滚。
-
----
-
-## 二、Reno 17 的调色盘是怎么实现的（重点）
-
-### 2.1 先看清楚它是什么
-
-Reno 17 的调色盘不是一个 UI 控件，而是**一整套 LUT 数据 + 一条三维查表流水线**：
-
-```
-/odm/etc/camera/basictone/
-├── setting/                     ← 11 张 .ini：哪颗镜头 / 哪个场景用哪套表
-│   ├── SimTool.ini
-│   ├── SimTool_Palette_Photo_Normal.ini
-│   ├── SimTool_Palette_Photo_Night.ini
-│   ├── SimTool_Palette_Photo_Portrait.ini
-│   ├── SimTool_Preview_Palette_Normal.ini
-│   └── …
-└── palette/
-    ├── HDR/SC16Lut0..8          ← 16³ × 3 × float32 = 49152 B / 张
-    └── SDR/SC16Lut0..8
-```
-
-- `SC16Lut`：16×16×16 的三维查找表，三平面（R/G/B 分开存），单张 48 KB。
-- 一共 9 档，对应 App 里那 9×9 棋盘的两个轴：**影调（SC16）× 取色（CWCM16）**。
-- 交叉索引 `index = 饱和度档 × 3 + 影调档`，**第 4 档是 identity（不变）**，所以 81 格里
-  每一格都能落到一张具体的 LUT 上。
-
-### 2.2 本机为什么没有
-
-`/odm/etc/camera/basictone` 这张目录两边都叫一样，但本机**整目录缺 `palette/`**：
-71 个同名文件里 67 个 md5 完全一致，唯独 `palette/` 一张都没有。
-
-直接强开 feature（把 `com.oplus.feature.color.palette.support` 改成 true）会在 native 里炸：
-
-```
-libCombineLut: std::bad_alloc
-```
-
-因为 `CombineLutHelper` 会去打开 `palette/HDR/SC16Lut0`，文件不存在 → 读出来是空 buffer →
-后面按 48 KB 算大小就越界了。
-
-### 2.3 我们的做法：把 LUT 搬进 APK，再把路径"骗"过去
-
-三段：
-
-**① 数据进包** —— 把 Reno 17 的 `palette/` 塞进 `app/src/main/assets/basictone/`
-（`setting/` 用本机原有的，`palette/` 用 Reno 的；9 张 SDR 里有 8 张和 X10 那版不同）。
-
-**② 首次进相机时铺到相机私有目录** —— 相机进程只信任自己的 `files/`：
-
-```
-/data/user/0/com.oplus.camera/files/campalette/basictone/
-├── .extract        ← 版本戳（如 reno17p-1.0.0），一致就跳过重铺
-├── setting/
-├── palette/HDR|SDR/
-└── odt/            ← 从 /odm 拷（4 张 12 MB，机器上已有，不塞进 APK）
-```
-
-铺完必须校验 `palette/HDR/SC16Lut8` 与 `palette/SDR/SC16Lut8` 都是 49152 字节，
-否则**放弃重定向**——半套 LUT 会让相机直接崩。
-
-**③ 把相机的加载路径换掉** —— hook 唯一的入口：
-
-```java
-com.oplus.ocs.camera.CombineLutHelper#init(6 参)
-    arg[2] = setting 路径
-    arg[5] = palette 路径
-```
-
-`arg[5]` 里含 `palette` 时，把 `setting / palette / odt` 三个参数换成部署目录；
-返回码 `palette init code=0` 就是全部 LUT 读成功了。
-
-### 2.4 取色棋盘（9×9 那格子）为什么曾经全黑
-
-面板上那 81 个色格，颜色来自 `PaletteSeekbarColors.get()` → `PaletteSeekbarColorTable`。
-本机这个类**不存在**，一 inflate 就 `NoClassDefFoundError`。
-
-早期做法是给它打桩，返回一个空 Recipe —— 结果就是**格子全黑**。正确做法是让真实现跑：
-
-- 我们把 **Reno 17 的 `com.oplus.camera.unit.sdk.jar`** 也换上去了（见第三节），
-  `PaletteSeekbarColorTable` 这类 ipusdk 依赖就齐了；
-- 于是 hook 里加一条判断：**依赖类在就什么都不做**，让真实现去算颜色。
-
-> 踩过的坑：判断依赖类时包名是 `com.oplus.ocs.camera.**ipusdk**.processunit.filter.palette.*`，
-> 不是 `ipuapi` —— 写错就永远判不到，格子一直黑。
-
-### 2.5 调色盘的模式白名单
-
-`com.oplus.camera.common.utils.CommonUtil.isSupportPalette(String mode)` 原文：
-
-```java
-if (!CameraConfig.d("com.oplus.feature.color.palette.support", false, false)) return false;
-return "common".equals(mode) || "portrait".equals(mode) || "night".equals(mode);
-```
-
-即出厂只有 **照片 / 人像 / 夜景** 有调色盘。模块把这条判断 hook 成恒 true
-（开关 `persist.camunlock.palette.allmode`），大师模式也能调出调色盘。
-
----
-
-## 三、胶片滤镜
+### 胶片滤镜
 
 | 层 | 做了什么 |
 |---|---|
-| 滤镜清单 | `com.oplus.camera.unit.sdk.jar` 的 `classes.dex` 里有一张「滤镜 id → `R.string.camera_filter_*`」表。本机 91 处、无 `hu_po`；Reno 版 93 处、含 `hu_po`(琥珀)/`qing_tou`(清透)。→ 整包换上（含 `oat/arm64/*.odex`、`*.vdex`） |
+| 滤镜清单 | `com.oplus.camera.unit.sdk.jar` 的 `classes.dex` 里是一张「滤镜 id → `R.string.camera_filter_*`」表。本机 91 处、无 `hu_po`；Reno 版 93 处、含 `hu_po`(琥珀)/`qing_tou`(清透) → 整包换上（含 `oat/arm64/*.odex`、`*.vdex`） |
 | 胶片 LUT | `/odm/etc/camera/meishe_lut`，路径**硬编码在 native** `libAlgoInterface.so`，Java 改不了 → 只能整目录 bind（135 个文件） |
-| Meishe 引擎 | 新版 Java 会给引擎设 `Custom LUT File Path` / `Custom LUT Factor`，原厂 `libmsnativefilter.so` 没有这两个 paramId（日志刷 `Invalid paramId`，滤镜静默失效）→ 换成 Reno 版（11.27 MB，带这两个参数），报错归零、琥珀真正生效 |
-| 滤镜组门控 | `FilterGroupManager` 32 个 `initXxxFilterGroup`，三层门控：静态字段 `sbXxxSupport` → 反射置 true；`isXxx()` → hook 成 true；`getConfigBooleanValue(key)` → 40 个 key 里挑 21 个强制放行。实测每组 3~23 个滤镜 |
+| Meishe 引擎 | 新 unit.sdk 会给引擎设 `Custom LUT File Path` / `Custom LUT Factor`，原厂 `libmsnativefilter.so` 没有这两个 paramId（日志刷 `Invalid paramId`、滤镜静默失效）→ 换 Reno 版（11.27 MB），报错归零 |
+| 滤镜组门控 | `FilterGroupManager` 的 32 个 `init*FilterGroup` 三层门控：静态字段 `sbXxxSupport` → 反射置 true；`isXxx()` → hook 成 true；`getConfigBooleanValue(key)` → 白名单强制 true |
+| 同名去重 | 原厂表里同一组会**重复加同一条滤镜**（视频/人像/照片组都把「和光」加了两次，dexdump 里同一组复用 v1/v2），界面上就是两个「和光」。这里按显示名在组内只留第一条，日志写明跳过了哪条（`persist.camunlock.filter.dedup`，默认开） |
 
-> `camera_unit_config` **保持设备原厂那份不动**。整份换成 Reno 的会让人像模式预览冻结
-> （连续两张截图 md5 相同、无 ANR）—— 这条线不碰配置层。
+### 灵感构图（AI 构图）
 
----
-
-## 四、灵感构图（AI 构图）
-
-相机本机带这套能力，只是 feature 默认关着。模块自己把「入口 → 出图 → 引导」三段都接上：
+相机本机带这套能力，feature 默认关着；模块把「入口 → 出图 → 引导」三段接上：
 
 | 阶段 | 做法 |
 |---|---|
-| 入口 | `CameraConfig.d` 里名字含 `aicomposition` / `ai_composition` 的 key 一律放行；`FeatureConfigureAdapter` 返回的 String 集合里补 `com.oplus.camera.feature.ai_composition`（只补 Collection，**不碰** `getConflictMap` 的 map —— 它的 key 是 `FeatureKey`，塞 String 会在 `FeatureConflictDecision.f()` 里 `ClassCastException` 闪退） |
-| 取帧 | 挂相机预览帧类的帧方法，参数里挑带 GPU 用法位、面积最大的那张，存 ThreadLocal。构图调用自己带进来的 buffer 常是 `RGB_888`/私有格式，转 Bitmap 会全黑，所以优先用取帧类抓到的那张 `RGBA_8888` |
-| 出图 | 帧 → Bitmap → 喂给相机的 AIUnit 云单元 `cloud_ai_shot_suggestions`，拿回 `{"data":{"zoom":1.8,"center":[384,563],"reason":"…"}}` |
-| 翻译 | `zoom`/`center` 反算裁剪框，拼成相机推荐列表认的 `{"outputNum":1,"crops":[{…srcCrop, compositionDesc}]}` |
-| 投递 | `runCompositionStreaming(HardwareBuffer, SdkCompositionStreamCallback)` 返回后，调回调的 `onEvent(1, json)` / `onEvent(2, json)`，并把原方法返回值改成 true |
-| 引导 | 相机自带的 native 跟踪器在这台机器上一直判「画面变化较大，已退出本次构图」，所以 `initializeTracker` / `track` 的返回值整个换掉：用陀螺仪角速度积分算偏移，回传 `{cx, cy, 0, 3}` |
+| 入口 | `CameraConfig` 里含 `aicomposition` / `ai_composition` 的 key 一律放行；`FeatureConfigureAdapter` 返回的 String 集合里补 `com.oplus.camera.feature.ai_composition`（只动 Collection，不碰 `getConflictMap` 的 map，否则 `FeatureConflictDecision.f()` 里 `ClassCastException` 闪退） |
+| 取帧 | 挂预览帧类的帧方法（候选 `tb.u / tb.q / tb.d / wb.r / rb.t`，按「11 参 + ≥2 个 `HardwareBuffer`」匹配，不认方法名），挑带 GPU 用法位、面积最大的那张存 ThreadLocal |
+| 出图 | 帧 → Bitmap → 喂相机 AIUnit 云单元 `cloud_ai_shot_suggestions`，拿 `{"data":{"zoom":…,"center":[…]}}` |
+| 翻译 | `zoom` / `center` 反算裁剪框，拼成相机推荐列表认的 `{"outputNum":1,"crops":[…]}` |
+| 投递 | `runCompositionStreaming(HardwareBuffer, Callback)` 返回后调回调 `onEvent(1/2, json)` |
+| 引导 | 相机自带 native 跟踪器本机一直判「画面变化较大」，改用陀螺仪角速度积分回传 `{cx, cy, 0, 3}` |
 
-AIUnit 的接入靠一份 1.5 KB 的桥接 dex（`assets/aiunit/feiyu_aiunit_bridge.dex`）：
+AIUnit 接入靠 1.5 KB 的桥接 dex（`assets/aiunit/feiyu_aiunit_bridge.dex`），在相机进程里用相机的
+ClassLoader 当 parent 动态加载。
+
+### 适配与日志（给换机型用的）
+
+hook 目标全部登记在 `Adapt.kt`：**id + 一句话说明 + 候选类名/方法指纹**。启动结束打一张自检表：
 
 ```
-com.trae.feiyu.cloud.FeiyuFrameDetector  extends com.oplus.aiunit.core.base.FrameDetector
-com.trae.feiyu.cloud.FeiyuConnector      extends com.oplus.aiunit.core.a
+设备：model=PLJ110 market=OPPO Find X9 · ColorOS=PLJ110_17.0.0.101(CN01) (API 37) · 相机=7.016.29
+模块：com.oppocamera.unlock 2.0.0
+文件 胶片 LUT：琥珀：/odm/etc/camera/meishe_lut/hu_po.bin → 824183 B
+文件 unit.sdk（滤镜清单）：/product/framework/com.oplus.camera.unit.sdk.jar → 5363803 B
+适配自检：HIT 18 / MISS 1，耗时 59 ms
+  HIT  camera.config      → d/getConfigBooleanValue hooked=2
+  HIT  combine.init       → hooked=1（arg[2]=setting / arg[5]=palette）
+  HIT  filter.groups.init → hooked=32
+  HIT  frame.source       → tb.q#f（11 参 / 3 个 HardwareBuffer）
+  MISS inspiration.trace  → 候选都不存在：pb.b$a
 ```
 
-它只有声明，实现全在相机里（`com.oplus.aiunit.*`），所以必须在相机进程里用相机的
-ClassLoader 当 parent 动态加载（`InMemoryDexClassLoader`）。
-
-日志：LSPosed 模块日志里搜 `CamUnlock`（`已送入推荐 …` / `跟踪回传 …`），
-桥接内部日志同时落在 `/sdcard/Android/data/com.oplus.camera/files/aicomp.log`。
-
----
-
-## 五、版本矩阵（混淆名会变，换版本必看）
-
-| | 7.006.121（本机原始） | 7.013.60 | 7.016.29（当前） |
-|---|---|---|---|
-| 预览取帧类（灵感构图） | `wb.r` / `rb.t`，方法 `f` | `tb.u` / `tb.d`，方法 `h` | `tb.q`，方法 `f` |
-| 取帧方法特征 | 11 参、含 2~3 个 `HardwareBuffer` | 同 | 同 |
-| 灵感 auth 类 | 混淆名 `pb.b` | 非混淆 `…aicomposition.inspiration.network.core.*` | 同 |
-
-取帧类不写死名字：候选列表 `listOf("tb.u", "tb.q", "tb.d", "wb.r", "rb.t")`，
-按「11 个参数 + ≥2 个 `HardwareBuffer`」匹配，方法名叫什么都行。
+- 日志同时进 logcat（tag `CamUnlock`）和
+  `/data/user/0/com.oplus.camera/files/camunlock/adapt.log`（root 可直接读、方便导出）。
+- 某个目标 MISS 只让**那一个功能**不生效，其它照旧；换机型时只需要改候选表，不用碰各个 hook。
+- `persist.camunlock.log.dump 1` 会把每个滤镜组的条目（显示名 + LUT）也打出来，验证/适配都靠它。
 
 ---
 
-## 六、开关一览
+## 安装
 
-| 开关 | 作用 |
-|---|---|
-| `setprop persist.camunlock.palette.allmode 1` | 调色盘在所有模式可见（含大师） |
-| `setprop persist.camunlock.filter.director 1` | 放行导演联名滤镜（姜文 / 贾樟柯） |
-| `setprop persist.camunlock.filter.{lively,festival,ceremony} 1` | 鲜活 / 节日 / 庆典（LUT 未随固件提供，默认关） |
+需要 root（KernelSU，exploit 注入的那种**重启会掉 root**）并装好 LSPosed。
+
+1. 构建出 `com.oppocamera.unlock-*.apk` 和 `oppo_camera_port_reno17p.zip`（见「构建」）。
+2. 装 LSPosed 模块：`adb install -r com.oppocamera.unlock-*.apk`，在 LSPosed 里启用并把作用域勾上「相机」。
+3. 刷 Magisk / KernelSU 模块：
+
+   ```sh
+   adb push oppo_camera_port_reno17p.zip /data/local/tmp/
+   adb shell su -c "ksud module install /data/local/tmp/oppo_camera_port_reno17p.zip"
+   ```
+
+4. 让文件层生效：`adb shell su -c "stop; start"`（只重启 framework，**别整机重启**）。
+5. 打开本应用点「重启相机」。
+
+**尽量不动系统文件**时，只装 LSPosed 模块、再 `touch /data/adb/modules/oppo_camera_port/minimal`
+即可：调色盘 + 灵感构图照常，`/odm`、`/product` 一个字节都不换（代价是少胶片 135 支 LUT、琥珀/清透）。
+
+回滚：KernelSU 管理器停用/删除模块，然后 `pm uninstall com.oplus.camera` 可把相机整包回退到 `/product/app` 原厂那份。
 
 ---
 
-## 七、实测
-
-- `deployed (extracted=29) -> …/campalette/basictone files=34`，二次启动走 `deployed (cached)`
-- `palette init code=0`（LUT 全部读成功）
-- 调色盘面板：影调 / 饱和度 / 滤镜强度 / 柔光 + 胶片样式（和光 / Portra 胶片 / 800T / CCD…），拖动实时生效，格子颜色正常
-- 大师模式调色盘：hook `isSupportPalette` 后可用
-- 人像模式：配置层用设备原厂 `camera_unit_config`，预览实时（连续两帧 md5 不同、无 ANR）
-- 琥珀 / 清透在滤镜列表里出现，选中后真实生效（`Invalid paramId` 归零）
-- 灵感构图入口出现，云端返回 `zoom=2.2 / center=[422,512]`，相机自动变焦并显示构图说明
-
-日志标签：LSPosed 里搜 `CamUnlock`；模块脚本日志 `logcat | grep palette_port`。
-
----
-
-## 八、编译 / 发版
+## 构建
 
 ```powershell
-$env:JAVA_HOME = "$env:USERPROFILE\.jdks\jbr-21.0.11"
-.\gradlew.bat :app:assembleDebug
+$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
+.\gradlew.bat :app:assembleDebug          # -> app/build/outputs/apk/debug/app-debug.apk
 ```
 
 Gradle 9.7.1 / AGP 9.4.1 / Kotlin 2.4.20 / compileSdk 37 / minSdk 33。
 
-Magisk 模块的打包脚本在 `magisk/build_module.py`（`payload/` 内容由固件提取，不入库），
-把 `meishe_lut/`、`apk_resources/`、`config/`、`framework/`、`lib64/`、`apk/OplusCamera.apk`
-放进 `magisk/payload/` 的对应目录后：
+Magisk 模块：
 
 ```sh
-python magisk/build_module.py      # 生成 out/oppo_camera_port_reno17p.zip
+python magisk/build_module.py              # 不打相机整包（默认）
+python magisk/build_module.py --with-apk   # 连 payload/apk/ 一起打（会替换本机相机）
 ```
 
-CI（`.github/workflows/build.yml`）：
+CI（`.github/workflows/build.yml`）：push 到 `main` / PR / 手动 → JDK 21 +
+`platforms;android-37.0` + `assembleDebug`；打 `v*` tag 时把 APK 挂进 Release。
 
-| 触发 | 动作 |
+---
+
+## 适配其他机型
+
+1. 先看 `adapt.log` 的自检表：哪些目标 MISS，`MISS` 行里写了「试过哪些候选」。
+2. 只改 `Adapt.kt` 里候选表 / `CameraPaletteModule.kt` 顶部的候选列表（取帧类、灵感类、滤镜类…），
+   不要散到各个 hook 里。
+3. 文件层要对照目标机自己的 `/odm/etc/camera/basictone`：本机的 `lmt/odt/vig/setting_dolby`
+   必须在部署目录里齐全，否则大师模式预览会发灰。
+4. 相机版本不同，混淆名会变：本仓库按 7.006 / 7.013 / 7.016 三版对齐过
+   （`wb.r / rb.t` → `tb.u / tb.d` → `tb.q`）。
+
+---
+
+## 目录
+
+| 路径 | 内容 |
 |---|---|
-| push 到 `main` / PR / 手动 | JDK 21 + `platforms;android-37` + `assembleDebug`，APK 传成 artifact |
-| 打 `v*` tag | 在上面基础上把 APK 挂进 GitHub Release |
-
-> CI 坑：`compileSdk 37` 对应的包名是 `platforms;android-37.0` 且只在 canary 频道，
-> 所以装 SDK 的命令是 `sdkmanager --channel=3 "platforms;android-37.0" "build-tools;36.0.0"`。
-
----
-
-## 九、已知问题
-
-- **本分支不含 POP / 实况调色盘**。`retro_camera_mode` 相关的 hook（模式工厂门、cameraId 折回、
-  `za.s.b` 回落、`Lut3dDataManager.e` guard、GL 反相遮罩 shader、retro 自绘 View）、
-  `RETRO_KEYS` 强制放行、`camera_unit_config` / protobuf 的 retro 补丁、`basictone/setting_Retro`
-  都已从这条线里摘掉；模式条和配置层保持设备原厂状态。
-  那套试验代码在 `main` 与 `backup/pop-wip-20261121` 分支，需要时再取。
-- **鲜活 / 节日 / 庆典**：LUT（`vibe/festival/ceremony.rgba.bin`）在两台机器固件里都不存在，
-  所以做成开关、默认关，开了只多出条目不会有效果。
-- **分析 APK 一定要用设备上装的那份**：`/data/app/…/base.apk`（7.016.29，
-  md5 `fbb77302d89dc710a2d28095fe5b2fa1`）。仓库 `payload` 里一度放过另一份同名构建，
-  dex 全不同（连 `zp/j` 都没有），拿它逆会得出完全错误的结论。
+| `app/src/main/java/com/oppocamera/unlock/hook/` | 钩子：`CameraPaletteModule.kt`（调色盘/滤镜/构图）、`Adapt.kt`（适配层与自检日志） |
+| `app/src/main/java/com/oppocamera/unlock/` | 设置界面（Compose）、`Shell.kt`（重启相机） |
+| `app/src/main/assets/basictone/` | 部署包：`palette/HDR|SDR/SC16Lut0..8` + `setting/*.ini` |
+| `app/src/main/assets/aiunit/` | 灵感构图桥接 dex |
+| `magisk/` | Magisk 模块脚本与打包（`payload/` 内容由固件提取，不入库） |
+| `docs/` | `实现说明.md`（各功能原理）、`DECRYPTED_CONFIG.md`（配置解密笔记） |
 
 ---
 
-## 致谢
+## 开关一览
+
+| 开关 | 作用 |
+|---|---|
+| `persist.camunlock.palette.allmode` | 调色盘在所有模式可见（含大师），默认开 |
+| `persist.camunlock.filter.dedup` | 滤镜同组同名去重（和光只留一条），默认开 |
+| `persist.camunlock.filter.director` | 放行导演联名滤镜（姜文 / 贾樟柯），默认关 |
+| `persist.camunlock.filter.{lively,festival,ceremony}` | 鲜活 / 节日 / 庆典，默认关（LUT 未随固件提供） |
+| `persist.camunlock.log` | 写日志（logcat + `files/camunlock/adapt.log`），默认开 |
+| `persist.camunlock.log.dump` | 额外打滤镜组内容等细节，默认关 |
+| `persist.camunlock.palette.off` | 诊断：完全不改 LUT 路径（本机会 native 崩，仅供排查） |
+| `persist.camunlock.palette.device_setting` | 诊断：setting 用原厂那份（原厂缺 `SimTool_Palette_*`，会崩） |
+| `touch /data/adb/modules/oppo_camera_port/minimal` | 不替换任何系统文件，只保留 LSPosed 侧功能 |
+
+---
+
+## 已知问题 / 未验证
+
+- **大师模式预览偏灰偏暗**。同画面 A/B 实测（`screencap` 后算预览区平均饱和度）：
+  大师 0.026 / 亮度 87，照片 0.054 / 亮度 148。**换回原厂 7.006.121 相机同样存在**，
+  所以不是相机整包的问题；调色盘注入的内容（Reno 的 `SimTool_Master.ini` + palette）改了
+  大师的 tone 路径，尚未定位到具体一项。想对比可以 `persist.camunlock.palette.device_setting 1`（会崩，仅存档）。
+- **调色盘注入是必须的**：不注入 palette 目录时（`persist.camunlock.palette.off 1`）本机相机
+  直接 `SIGSEGV`（`libCombineLutJni.processV3`、`addr=0x20`）—— 原厂 `/odm` 里没有 palette。
+- **POP / 实况调色盘不在本分支**：`retro_camera_mode` 相关 hook、retro 配置补丁、`setting_Retro`、
+  retro 胶囊 UI 全部在 `main` 与 `backup/pop-wip-20261121` 分支上；模式条与配置层保持设备原厂。
+- **鲜活 / 节日 / 庆典**：LUT（`vibe/festival/ceremony.rgba.bin`）两台机器固件里都不存在，开了只多条目。
+- **未上机验证**：`--with-apk` 打包路径、其他 ColorOS 版本、前置摄像头的调色盘、
+  4K60 视频下的滤镜、相册重新编辑。
+- **分析 APK 一定要用设备实装的那份**（`/data/app/…/base.apk`，7.016.29
+  md5 `fbb77302d89dc710a2d28095fe5b2fa1`）：仓库 `payload` 里另一份同名构建 dex 全不同。
+
+---
+
+## 许可证与致谢
+
+本仓库未声明开源许可证（默认保留所有权利），使用前请先确认机型与风险。
 
 - [libxposed API](https://github.com/libxposed/api) —— 模块框架
-- PUI 设计系统：作者 **天伞桜**（[GitHub](https://github.com/sakurakingfifth-debug/PUIInstaller) · [酷安](https://www.coolapk.com/u/540690)）—— 界面骨架
+- PUI 设计系统：作者 **天伞桜**（[GitHub](https://github.com/sakurakingfifth-debug/PUIInstaller) ·
+  [酷安](https://www.coolapk.com/u/540690)）—— 界面骨架
+- 灵感构图取帧桥：参考 **KaMuaMua2020**（酷安 `u/26800889`）
+- 适配层写法参考 [OmniCam-Muse](https://github.com/benbaobaoshigemi/OmniCam-Muse)
+  （symbols 指纹匹配 + OptionalHook + Diagnostics 自检的思路）
