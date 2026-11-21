@@ -278,7 +278,7 @@ CI（`.github/workflows/build.yml`）：
     hook 装上了（`hooked=2`）但切模式时该方法不被调用；
   - 探过 `com.oplus.camera.o6` / `ha.q0` / `CameraManager`，没有返回 5 个模式名的方法。
 
-  **2026-11-21 更新：POP 进模式条的关键点全部打通了**
+  **2026-11-21 更新：模式条/「更多」的来源已经查清（POP 显示能打通，跑起来还差一层）**
 
   1. **模式条不是 APK 写死**，是相机自己的数据库
      `/data/user/0/com.oplus.camera/databases/mode_data.db`：
@@ -308,34 +308,37 @@ CI（`.github/workflows/build.yml`）：
      ⚠️ 直接拿 resource id（2131821668）去填 `mode_id` 会让相机启动就崩
      （`Resources$NotFoundException: String resource ID #0x0`），必须是 `e()` 出来的小整数。
 
-  3. **写入后就生效**：`INSERT mode_info('retroCamera', 42, 'position_headline', 0, ...)`
-     + 把其它 headline 行的 rank 顺移，重启相机 —— 相机不再崩（crash 0），
-     POP 排在模式条第一位。
-     工具：`_tools/make_final_db.py`（造库）、`_tools/dev/apply_final_db.sh`（换库/重启）。
+  3. **能显示，但点进去会闪退** —— 所以现在**没有**把 POP 留在模式数据里
+     （`mode_data.db` 已回原厂 19 行）。原因见下面「POP 闪退的三道门」。
+     造库/换库工具：`_tools/make_pop_bar_db.py`、`_tools/dev/apply_safe_db.sh`。
 
   4. **native 依赖**：换上了 Reno17p 的 `libBasicTonePhoto.so`（591,552 B）。
      原厂那颗 `palette` 相关符号是 **0 个**，Reno 版有 **6 个** —— POP/调色盘走 BasicTone
      时就是靠它。已进模块 `payload/lib64/`，`post-fs-data.sh` 里绑定。
 
-  剩下的还是 native 深水区：`libAlgoInterface.so` 的三处 NOP + 路径重定向
-  （参考 OmniCam-Muse 的 Reno16 POP 移植），那部分是让 POP 出片/滑杆正常的。
+  **POP 闪退的三道门（2026-11-21 逐层查清，前两道已通）**
 
-  **2026-11-21 更新：模式条的真正来源找到了** —— 不是 APK 写死，是相机自己的数据库
-  `/data/user/0/com.oplus.camera/databases/mode_data.db`：
+  | # | 卡点 | 证据 | 状态 |
+  |---|---|---|---|
+  | 1 | 模式工厂 `cm.x3.a("retroCamera")` 先查 `CameraConfig.getConfigBooleanValue("com.oplus.feature.retro.camera.support")`，false 就 `return null` | 切模式动画结束后 `CameraUIManager.qh` 里 `BaseMode.Vi()` NPE | **已修**：这个一参方法**不经过**三参 `d(...)`，必须单独 hook；修完 POP 模式类 `em.a2` 能正常 new |
+  | 2 | 模式拿到的 cameraId 是 Reno 的 **12**（`za.z0.B()` 就是 `return this.v;`），本机只枚举 0..5 | `CameraManager.E4(12)` → `cm.a4.i(12)` 返回 null → `lm.i.s(PreviewProcessor)` 里 `Objects.requireNonNull` NPE | 加了三处兜底 hook（越界折回 0、E4 取不到回落 0），但见第 3 条 |
+  | 3 | retro 模式根本没打开过摄像头 | 整个切换过程 `CameraService::connect` 只有启动时那次 camera ID 0；同一刻 `E4(0)` 也是 null；改 `retro_camera_case.preview`（rear_sat→rear_main）、补 `mode_cameraType_sensor_number` 都不改变那个 12 | **未通**，不在 Java 层 |
 
-  ```sql
-  CREATE TABLE mode_info(mode_name TEXT, mode_id INT, position TEXT, rank INT,
-                         support_edit TEXT, support_front TEXT);
-  ```
+  第 3 条的 12 出自 unit.sdk（`JsonParser` / `CameraUnitClient`）按 Reno 的单元模型算出来的产物。
+  下一步只有两条路：hook 单元模型的产物（`cm/j5` / `cm/a4` 的构造），
+  或者走 native（`libAlgoInterface.so` 三处 NOP + 路径重映射，参考 OmniCam-Muse 的 Reno16 移植）。
+  只要「胶片效果」的话，`FilterGroupManager.initRetroCameraFilterGroup()` 能无条件填 9 支 retro 滤镜
+  （模块已主动调用），把胶片挂到现有模式即可，不需要 retro 模式本身。
 
-  `position='position_headline'` 就是模式条那 5 格（按 `rank` 排序），
-  `position='position_mode_panel'` 是「更多」面板。实测往 headline 插一行，
-  模式条立刻多/变一格 —— 也就是**这条路能控制模式条**。
-  缺的只是 `retroCamera` 的 `mode_id`：插 id=37/38 显示的是「风光」（未知 id 的兜底标签），
-  还没试到正确的 id。工具留在 `_tools/add_pop_db.py` + `swap_modedb.sh`。
+  完整证据链：`CameraUnlock/_tools/dev/POP_CRASH_ROOTCAUSE.md`。
+  分析用的自研工具链：`_tools/dexdesc.py`、`_tools/dexkit.py`、`_tools/dexcls.py`、
+  `_tools/dumpclass.ps1`（自动挑 dex → 设备 dexdump → 只拉目标类片段）。
 - **鲜活 / 节日 / 庆典**：LUT（`vibe/festival/ceremony.rgba.bin`）在两台机器固件里都不存在，
   所以做成开关、默认关，开了只多出条目不会有效果。
 - **7.013.60 没有 POP 参数面板**（`enterPopProfessionalMode` 只在 7.016.29 里）。
+- **分析 APK 一定要用设备上装的那份**：`/data/app/…/base.apk`（7.016.29，
+  md5 `fbb77302d89dc710a2d28095fe5b2fa1`）。仓库 `payload` 里一度放过另一份同名构建，
+  dex 全不同（连 `zp/j` 都没有），拿它逆会得出完全错误的结论。
 
 ---
 

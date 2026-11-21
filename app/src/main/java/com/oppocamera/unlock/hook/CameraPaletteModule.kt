@@ -58,6 +58,9 @@ class CameraPaletteModule : XposedModule() {
         /** POP 模式的模式名（资源 camera_mode_retro_camera 的中文值就是 "POP"） */
         private const val POP_MODE = "retro_camera_mode"
 
+        /** 本机 cameraId 有效范围（camera_unit_config 的 camera_id_list 是 0..5） */
+        private const val MAX_CAMERA_ID = 5
+
         /** 模式 id ↔ tag 的映射类（master / retroCamera / commonVideo …都在这张表里） */
         private const val MODE_MAP_CLS = "com.oplus.camera.v6"
 
@@ -186,6 +189,14 @@ class CameraPaletteModule : XposedModule() {
         /** 临时：跟踪「灵感推荐」这条链路的鉴权/网络，看它卡在哪一步。 */
         private const val TRACE_INSPIRATION = true
 
+        /**
+         * 临时：POP 进模式后预览崩在
+         *   lm.i.s(PreviewProcessor) → Objects.requireNonNull(v9)
+         *   v9 = u6.E4(cameraId)，即「按 cameraId 拿设备适配器」返回了 null。
+         * 打开后打印 cameraId 和 E4 的结果，判断是 id 不对还是适配器没建。
+         */
+        private const val TRACE_PREVIEW = false
+
         private val INSPIRATION_CLASSES = listOf(
             "com.oplus.camera.feature.aicomposition.inspiration.account.AICompositionAccountManager",
             "com.oplus.camera.feature.aicomposition.inspiration.network.core.InspirationNetworkException",
@@ -238,6 +249,9 @@ class CameraPaletteModule : XposedModule() {
         if (TRACE_MODE_BUILDERS) runCatching { probeModeBuilders(cl) }.onFailure { log("probeModeBuilders: $it") }
         runCatching { dumpModeIds(cl) }.onFailure { log("dumpModeIds: $it") }
         runCatching { hookComposition(cl) }.onFailure { log("hookComposition: $it") }
+        runCatching { hookAdapterIdFallback(cl) }.onFailure { log("hookAdapterIdFallback: $it") }
+        runCatching { hookCameraIdRemap(cl) }.onFailure { log("hookCameraIdRemap: $it") }
+        if (TRACE_PREVIEW) runCatching { tracePreview(cl) }.onFailure { log("tracePreview: $it") }
         if (TRACE_INSPIRATION) runCatching { traceInspiration(cl) }.onFailure { log("traceInspiration: $it") }
 
         log("ready · api=${getApiVersion()} · pid=${android.os.Process.myPid()}")
@@ -251,23 +265,170 @@ class CameraPaletteModule : XposedModule() {
             log("WARN: $CONFIG not found")
             return
         }
+        // 两个入口都要挂：
+        //   d(String, boolean, boolean)      —— 老三参版本，调色盘/构图走这里
+        //   getConfigBooleanValue(String)    —— 只查缓存表 + 原始字符串，
+        //                                        内部【不经过 d】！POP 模式的工厂
+        //                                        cm.x3.a("retroCamera") 就是用它判
+        //                                        com.oplus.feature.retro.camera.support，
+        //                                        不挂这个则模式实例为 null → 切模式
+        //                                        动画结束后 CameraUIManager.qh NPE。
         var n = 0
         cls.declaredMethods.forEach { m ->
-            if (m.name != "d" || m.parameterTypes.size != 3) return@forEach
-            if (m.parameterTypes[0] != String::class.java) return@forEach
-            if (m.returnType != Boolean::class.javaPrimitiveType) return@forEach
+            val keyArg = m.parameterTypes.firstOrNull() == String::class.java
+            val boolRet = m.returnType == Boolean::class.javaPrimitiveType
+            val isD3 = m.name == "d" && m.parameterTypes.size == 3
+            val isGetBool = m.name == "getConfigBooleanValue" && m.parameterTypes.size == 1
+            if (!keyArg || !boolRet || !(isD3 || isGetBool)) return@forEach
             runCatching {
                 hook(m).intercept { chain ->
                     val key = chain.getArg(0) as? String ?: return@intercept chain.proceed()
-                    val lower = key.lowercase()
-                    if (key == KEY_PALETTE ||
-                        lower.contains("aicomposition") || lower.contains("ai_composition")
-                    ) true else chain.proceed()
+                    if (forcedKey(key)) true else chain.proceed()
                 }
                 n++
-            }.onFailure { log("hook CameraConfig.d: $it") }
+            }.onFailure { log("hook CameraConfig.${m.name}: $it") }
         }
-        log("CameraConfig.d hooked=$n")
+        log("CameraConfig.d/getConfigBooleanValue hooked=$n")
+    }
+
+    /**
+     * 需要无条件放行的配置 key。
+     *
+     * 「retro」这一族是 POP（实况调色盘）模式的唯一门控：模式工厂
+     * `cm.x3.a(String)` 里
+     *
+     *     if ("retroCamera".equals(name)) {
+     *         if (!CameraConfig.getConfigBooleanValue("com.oplus.feature.retro.camera.support"))
+     *             return null;                       // ← 本机配置里没这条，返回 null
+     *         return new Lem.a2(...);                // ← 真正的 POP 模式类
+     *     }
+     *
+     * 所以 key 里带 retro 的一律放行；滤镜那批 key（FILTER_KEYS）本来也预期为 true。
+     */
+    private fun forcedKey(key: String): Boolean {
+        if (key == KEY_PALETTE) return true
+        val lower = key.lowercase()
+        if (lower.contains("aicomposition") || lower.contains("ai_composition")) return true
+        if (lower.contains("retro")) return true
+        return FORCED.contains(key) || FILTER_KEYS.contains(key)
+    }
+
+    /**
+     * POP 模式的 cameraId 是 Reno17p 的编号（实测 12），本机只枚举到 0..5，
+     * 于是 `CameraManager.E4(id)` → `cm.a4.i(id)` 返回 null，PreviewProcessor 拿空适配器崩。
+     *
+     * 兜底：拿不到就走主摄（cameraId 0）。只在返回 null 时才回落，正常模式零影响。
+     */
+    private fun hookAdapterIdFallback(cl: ClassLoader) {
+        val cls = runCatching { cl.loadClass("com.oplus.camera.CameraManager") }.getOrNull()
+        if (cls == null) {
+            log("WARN: com.oplus.camera.CameraManager not found")
+            return
+        }
+        val m = cls.declaredMethods.firstOrNull {
+            it.name == "E4" && it.parameterTypes.size == 1 && it.parameterTypes[0] == java.lang.Integer.TYPE
+        }
+        if (m == null) {
+            log("WARN: CameraManager.E4(I) not found")
+            return
+        }
+        hook(m).intercept { chain ->
+            val id = chain.args.getOrNull(0) as? Int ?: return@intercept chain.proceed()
+            val r: Any? = chain.proceed()
+            if (r != null) return@intercept r
+            val args = chain.args.toMutableList()
+            args[0] = 0
+            val fb = runCatching { chain.proceed(args.toTypedArray()) as Any? }.getOrNull()
+            logOnce("E4($id)=null → 回落 cameraId 0 (" + (fb?.javaClass?.name ?: "null") + ")")
+            fb
+        }
+        log("CameraManager.E4 已挂（无效 cameraId 回落 0）")
+    }
+
+    /**
+     * POP 模式的 cameraId 落在 Reno17p 的编号上（实测 `za.z0.B()` = 12），
+     * 本机只枚举到 0..5，于是 `CameraManager.E4(12)` → `cm.a4.i(12)` 返回 null，
+     * PreviewProcessor 拿空适配器崩在 Objects.requireNonNull。
+     *
+     * `za.z0.B()` 原文就是 `return this.v;`，这里把越界的 id 折回主摄 0，
+     * 让 retro 模式走本机真实存在的摄像头。只改越界值，正常模式不受影响。
+     */
+    private fun hookCameraIdRemap(cl: ClassLoader) {
+        val cls = runCatching { cl.loadClass("za.z0") }.getOrNull()
+        if (cls == null) {
+            log("WARN: za.z0 not found")
+            return
+        }
+        val m = cls.declaredMethods.firstOrNull {
+            it.name == "B" && it.parameterTypes.isEmpty() && it.returnType == java.lang.Integer.TYPE
+        }
+        if (m == null) {
+            log("WARN: za.z0.B()I not found")
+            return
+        }
+        hook(m).intercept { chain ->
+            val id = chain.proceed() as? Int ?: return@intercept chain.proceed()
+            if (id in 0..MAX_CAMERA_ID) return@intercept id
+            logOnce("cameraId $id 越界 → 0")
+            0
+        }
+        log("za.z0.B() 已挂（越界 cameraId 折回 0）")
+    }
+
+    /**
+     * 诊断：`lm.i`（PreviewProcessor）的 `s(boolean)` 用
+     *
+     *     za.i1 dev = this.A.E4(this.C.B());     // 当前模式的 cameraId → 设备适配器
+     *     Objects.requireNonNull(dev);           // ← POP 模式下这里 NPE
+     *
+     * 打印 cameraId 和 E4 的返回，判断是 id 不合法还是适配器没建出来。
+     */
+    private fun tracePreview(cl: ClassLoader) {
+        val cls = runCatching { cl.loadClass("lm.i") }.getOrNull()
+        if (cls == null) {
+            log("WARN: lm.i not found")
+            return
+        }
+        val m = cls.declaredMethods.firstOrNull {
+            it.name == "s" && it.parameterTypes.size == 1 &&
+                it.parameterTypes[0] == java.lang.Boolean.TYPE
+        }
+        if (m == null) {
+            log("WARN: lm.i.s(Z) not found")
+            return
+        }
+        val fC = runCatching { cls.getDeclaredField("C").apply { isAccessible = true } }.getOrNull()
+        val fA = runCatching { cls.getDeclaredField("A").apply { isAccessible = true } }.getOrNull()
+        hook(m).intercept { chain ->
+            logOnce("preview: s() 进入")
+            runCatching {
+                val self = chain.thisObject
+                val ids = ArrayList<String>()
+                ids.add("self=" + (self?.javaClass?.name ?: "null"))
+                fC?.get(self)?.let { x ->
+                    val b = x.javaClass.methods.firstOrNull { it.name == "B" && it.parameterTypes.isEmpty() }
+                    ids.add("C=" + x.javaClass.name + " B=" + (b?.invoke(x)?.toString() ?: "?"))
+                }
+                val svc = fA?.get(self)
+                ids.add("svc=" + (svc?.javaClass?.name ?: "null"))
+                if (svc != null) {
+                    val e4 = svc.javaClass.methods.firstOrNull {
+                        it.name == "E4" && it.parameterTypes.size == 1 &&
+                            (it.parameterTypes[0] == java.lang.Integer.TYPE || it.parameterTypes[0] == Int::class.java)
+                    }
+                    ids.add("E4m=" + (e4 != null))
+                    val raw = ids.getOrNull(1)?.substringAfter("B=")
+                        ?.takeWhile { it.isDigit() || it == '-' }?.toIntOrNull()
+                    if (e4 != null && raw != null) {
+                        val r = runCatching { e4.invoke(svc, raw) }
+                        ids.add("E4($raw)=" + (r.getOrNull()?.javaClass?.name ?: "null:" + r.exceptionOrNull()))
+                    }
+                }
+                logOnce("preview: " + ids.joinToString(" "))
+            }.onFailure { log("preview trace err: $it") }
+            chain.proceed()
+        }
+        log("PreviewProcessor.s 已挂（诊断 cameraId / E4）")
     }
 
     /**
