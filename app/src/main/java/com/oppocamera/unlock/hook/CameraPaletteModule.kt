@@ -1297,6 +1297,94 @@ class CameraPaletteModule : XposedModule() {
             n++
         }.onFailure { log("hookUiSkin.openRawResource: $it") }
 
+        // 有的播放器用 openRawResourceFd（拿 AssetFileDescriptor）读动画，也要接管
+        runCatching {
+            val rc = cl.loadClass("android.content.res.Resources")
+            val m = rc.getDeclaredMethod("openRawResourceFd", Integer.TYPE)
+            hook(m).intercept { chain ->
+                val id = chain.getArg(0) as? Int
+                val resources = chain.thisObject as? android.content.res.Resources
+                if (id != null && resources != null && uiRaw.isNotEmpty()) {
+                    val name = runCatching {
+                        resources.getResourceName(id).substringAfter(":raw/")
+                    }.getOrNull()
+                    val fd = name?.let { uiRawFd(it) }
+                    if (fd != null) {
+                        Adapt.detail("动画替换(fd)：$name")
+                        return@intercept fd
+                    }
+                }
+                chain.proceed()
+            }
+            n++
+        }.onFailure { log("hookUiSkin.openRawResourceFd: $it") }
+
+        // 相机大量图标是 `setImageDrawable(resources.getDrawable(id))` 这种写法，
+        // 上面两个 setImage/setBackground 入口根本碰不到 —— 这里挂 Resources.getDrawable，
+        // 覆盖「拿到 Drawable 自己设」的那条路。返回前按原图 intrinsic 尺寸缩放，避免布局被撑大。
+        val themeCls = runCatching { cl.loadClass("android.content.res.Resources\$Theme") }.getOrNull()
+        runCatching {
+            val rc = cl.loadClass("android.content.res.Resources")
+            val m = rc.getDeclaredMethod("getDrawable", Integer.TYPE)
+            hook(m).intercept { chain ->
+                val id = chain.getArg(0) as? Int
+                val res = chain.thisObject as? android.content.res.Resources
+                if (id != null && res != null) {
+                    val name = uiNameOf(res, id)
+                    if (traceUi()) logOnce("getDrawable 请求：$name")
+                    if (name != null && uiOverrides.containsKey(name)) {
+                        val original = chain.proceed() as? Drawable
+                        val replaced = uiDrawableSized(name, res, original)
+                        if (replaced != null) return@intercept replaced
+                    }
+                }
+                chain.proceed()
+            }
+            n++
+        }.onFailure { log("hookUiSkin.getDrawable: $it") }
+
+        // AppCompatResources / 主题取图走的是这两条
+        runCatching {
+            val rc = cl.loadClass("android.content.res.Resources")
+            val m = rc.getDeclaredMethod("getDrawable", Integer.TYPE, themeCls)
+            hook(m).intercept { chain ->
+                val id = chain.getArg(0) as? Int
+                val res = chain.thisObject as? android.content.res.Resources
+                if (id != null && res != null) {
+                    val name = uiNameOf(res, id)
+                    if (traceUi()) logOnce("getDrawable(theme) 请求：$name")
+                    if (name != null && uiOverrides.containsKey(name)) {
+                        val original = chain.proceed() as? Drawable
+                        val replaced = uiDrawableSized(name, res, original)
+                        if (replaced != null) return@intercept replaced
+                    }
+                }
+                chain.proceed()
+            }
+            n++
+        }.onFailure { log("hookUiSkin.getDrawable(theme): $it") }
+
+        // Resources$Theme.getDrawable(int)
+        runCatching {
+            val m = themeCls!!.getDeclaredMethod("getDrawable", Integer.TYPE)
+            hook(m).intercept { chain ->
+                val id = chain.getArg(0) as? Int
+                val theme = chain.thisObject
+                val res = runCatching { themeCls.getMethod("getResources").invoke(theme) as android.content.res.Resources }.getOrNull()
+                if (id != null && res != null) {
+                    val name = uiNameOf(res, id)
+                    if (traceUi()) logOnce("theme.getDrawable 请求：$name")
+                    if (name != null && uiOverrides.containsKey(name)) {
+                        val original = chain.proceed() as? Drawable
+                        val replaced = uiDrawableSized(name, res, original)
+                        if (replaced != null) return@intercept replaced
+                    }
+                }
+                chain.proceed()
+            }
+            n++
+        }.onFailure { log("hookUiSkin.theme.getDrawable: $it") }
+
         if (n == 0) {
             Adapt.miss("ui.skin", "调色盘 / 灵感构图 UI 换图", "两个资源入口都没挂上")
         } else {
@@ -1338,6 +1426,62 @@ class CameraPaletteModule : XposedModule() {
         synchronized(uiCache) { uiCache[name] = drawable }
         return drawable
     }
+
+    /** 是否打开「相机请求了哪些资源」的跟踪日志。 */
+    private fun traceUi(): Boolean = Adapt.propOn("persist.camunlock.ui.trace")
+
+    /** 资源 id → 资源名（drawable 段），带缓存；相机里 id 是稳定的。 */
+    private val uiNameCache = HashMap<Int, String?>()
+
+    private fun uiNameOf(res: android.content.res.Resources, id: Int): String? {        synchronized(uiNameCache) { if (uiNameCache.containsKey(id)) return uiNameCache[id] }
+        val name = runCatching {
+            res.getResourceName(id).substringAfter(":drawable/")
+        }.getOrNull()
+        synchronized(uiNameCache) { uiNameCache[id] = name }
+        return name
+    }
+
+    /**
+     * 按「原图 intrinsic 尺寸」把自己的位图缩到一样大再返回。
+     * 相机很多图标是 18dp/24dp 的矢量，直接塞 256px 的位图会把布局撑大/被裁掉，
+     * 表现就是「换了图但看着不对」。
+     */
+    private fun uiDrawableSized(name: String, res: android.content.res.Resources, original: Drawable?): Drawable? {
+        val key = name + "@" + (original?.intrinsicWidth ?: 0) + "x" + (original?.intrinsicHeight ?: 0)
+        synchronized(uiCache) { uiCache[key]?.let { return it } }
+        val file = uiOverrides[name] ?: return null
+        val apk = moduleApkPath() ?: return null
+        val raw = runCatching {
+            ZipFile(apk).use { zip ->
+                val entry = zip.getEntry("assets/ui/$file") ?: return@use null
+                zip.getInputStream(entry).use { input -> BitmapFactory.decodeStream(input) }
+            }
+        }.getOrNull() ?: return null
+        val w = original?.intrinsicWidth ?: 0
+        val h = original?.intrinsicHeight ?: 0
+        val bitmap = if (w > 0 && h > 0 && (w != raw.width || h != raw.height)) {
+            runCatching { android.graphics.Bitmap.createScaledBitmap(raw, w, h, true) }.getOrDefault(raw)
+        } else raw
+        val drawable = BitmapDrawable(res, bitmap)
+        // 保持原图的 tint（有些图标是 tint 出来的白/灰）
+        runCatching { original?.colorFilter?.let { drawable.colorFilter = it } }
+        synchronized(uiCache) { uiCache[key] = drawable }
+        Adapt.detail("UI 替换(getDrawable)：$name → $file（${bitmap.width}x${bitmap.height}）")
+        return drawable
+    }
+
+    /** 把 raw 动画字节落到相机缓存目录，返回 AssetFileDescriptor（给 openRawResourceFd 用）。 */
+    private fun uiRawFd(name: String): android.content.res.AssetFileDescriptor? = runCatching {
+        val bytes = uiRawBytes(name) ?: return@runCatching null
+        val app = currentApplication() ?: return@runCatching null
+        val dir = File(app.cacheDir, "uiraw").apply { mkdirs() }
+        val file = File(dir, uiRaw[name] ?: (name + ".json"))
+        if (!file.isFile || file.length() != bytes.size.toLong()) file.writeBytes(bytes)
+        val pfd = android.os.ParcelFileDescriptor.open(
+            file, android.os.ParcelFileDescriptor.MODE_READ_ONLY
+        )
+        android.content.res.AssetFileDescriptor(pfd, 0, file.length())
+    }.getOrNull()
 
     /** 读 assets/ui/overrides.json（资源名 → 文件名）。 */
     private fun readUiOverrides(apk: String): Map<String, String> = runCatching {

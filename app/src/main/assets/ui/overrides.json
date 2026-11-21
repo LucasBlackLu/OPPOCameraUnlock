@@ -2,10 +2,7 @@
   "version": 3,
   "source": "OplusCamera 7.016.29",
   "note": "资源名 -> 文件名；drawable 走 setImageResource/setBackgroundResource，raw 动画走 openRawResource",
-  "manual": {
-    "ai_composition_icon_on": "icon_tool_grid_light",
-    "ai_composition_icon_off": "icon_tool_grid_light_sub"
-  },
+  "manual": {},
   "overrides": {
     "ai_composition_entry_guide_inspiration": "ai_composition_entry_guide_inspiration.png",
     "ai_composition_entry_guide_real_scene": "ai_composition_entry_guide_real_scene.png",
@@ -22,6 +19,9 @@
     "icon_tool_grid_light_sub": "icon_tool_grid_light_sub.png",
     "inspiration_image_selector_refresh_icon": "inspiration_image_selector_refresh_icon.png",
     "inspiration_image_selector_xhs_icon": "inspiration_image_selector_xhs_icon.png",
+    "menu_ai_capture_guide_off_selector": "menu_ai_capture_guide_off_selector.png",
+    "menu_ai_capture_guide_on_selector": "menu_ai_capture_guide_on_selector.png",
+    "menu_button_ai_capture_guide": "menu_button_ai_capture_guide.png",
     "palette_soft_light_menu_effect_button": "palette_soft_light_menu_effect_button.png"
   },
   "raw": {
