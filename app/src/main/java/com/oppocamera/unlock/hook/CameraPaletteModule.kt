@@ -42,7 +42,7 @@ class CameraPaletteModule : XposedModule() {
          * /odm/etc/camera/basictone/palette（18 个 SC16，其中 8 个与 X10 那版不同）。
          * 改这个字符串会让相机侧的缓存整包重铺。
          */
-        private const val EXTRACT = "reno17p-1.0.0"
+        private const val EXTRACT = "reno17p-1.1.0"
         private const val ASSET_ROOT = "assets/basictone/"
 
         /** 调色盘 */
