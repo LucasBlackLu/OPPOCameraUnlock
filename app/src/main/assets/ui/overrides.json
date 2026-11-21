@@ -1,11 +1,33 @@
 {
-  "version": 1,
-  "note": "资源名 -> png 文件名；运行时由 UiSkin hook 按资源名替换",
+  "version": 3,
+  "source": "OplusCamera 7.016.29",
+  "note": "资源名 -> 文件名；drawable 走 setImageResource/setBackgroundResource，raw 动画走 openRawResource",
+  "manual": {
+    "ai_composition_icon_on": "icon_tool_grid_light",
+    "ai_composition_icon_off": "icon_tool_grid_light_sub"
+  },
   "overrides": {
     "ai_composition_entry_guide_inspiration": "ai_composition_entry_guide_inspiration.png",
     "ai_composition_entry_guide_real_scene": "ai_composition_entry_guide_real_scene.png",
     "ai_composition_entry_guide_select_check_selected": "ai_composition_entry_guide_select_check_selected.png",
-    "filter_palette": "filter_palette.png",
-    "soft_light_bottom_menu_icon_on": "soft_light_bottom_menu_icon_on.png"
+    "ai_composition_entry_guide_xhs_logo": "ai_composition_entry_guide_xhs_logo.png",
+    "ai_composition_expand": "ai_composition_expand.png",
+    "ai_composition_icon_off": "ai_composition_icon_off.png",
+    "ai_composition_icon_on": "ai_composition_icon_on.png",
+    "ai_composition_preview_close": "ai_composition_preview_close.png",
+    "ai_composition_reference_loading_cancel_icon": "ai_composition_reference_loading_cancel_icon.png",
+    "ai_composition_switch_off": "ai_composition_switch_off.png",
+    "ai_composition_switch_on": "ai_composition_switch_on.png",
+    "icon_tool_grid_light": "icon_tool_grid_light.png",
+    "icon_tool_grid_light_sub": "icon_tool_grid_light_sub.png",
+    "inspiration_image_selector_refresh_icon": "inspiration_image_selector_refresh_icon.png",
+    "inspiration_image_selector_xhs_icon": "inspiration_image_selector_xhs_icon.png",
+    "palette_soft_light_menu_effect_button": "palette_soft_light_menu_effect_button.png"
+  },
+  "raw": {
+    "ai_composition_enter_button": "ai_composition_enter_button.json",
+    "ai_composition_loading_dots": "ai_composition_loading_dots.json",
+    "ai_composition_select_check": "ai_composition_select_check.json",
+    "ai_composition_track_guide": "ai_composition_track_guide.json"
   }
 }

@@ -64,24 +64,26 @@ ClassLoader 当 parent 动态加载。
 
 ### UI 换图（不替换相机 APK）
 
-灵感构图的图标、入口引导图、调色盘按钮这些**图片**可以只换图不换 APK：
-把 7.016.29 里改动过的图放进 `app/src/main/assets/ui/`（配 `overrides.json`），
-运行时按**资源名**替换（`ImageView.setImageResource` / `View.setBackgroundResource` 两个入口）。
+灵感构图的图标、入口引导图、调色盘相关按钮这些**图片**可以只换图不换 APK：
+把 **7.016.29** 里那一族 UI 图（`ai_composition_*` / `inspiration_image_*` / `icon_tool_grid_*` /
+调色盘按钮）放进 `app/src/main/assets/ui/`（配 `overrides.json`），运行时按**资源名**替换
+（`ImageView.setImageResource` / `View.setBackgroundResource` 两个入口），**没有开关，默认一直生效**。
 
+- 现在打进去 16 张，全部来自 7.016.29。其中「灵感构图」那两个槽位用的是 7.016.29 的**井字**图标
+  （`icon_tool_grid_light` / `_light_sub`）——原厂 7.006 画的是星形，这里手动映射成井字。
+- `filter_palette` 是个渐变背景（shape/gradient），当位图换会变白块，所以排除了；
+  `layout/`、`shape`、`gradient` 这类资源同理，不属于图片。
 - 换了几张、有没有就绪，`adapt.log` 里直接看：
-  `HIT ui.skin → hooked=2，映射 5 项 …`、`UI 资源就绪：filter_palette ← filter_palette.png（256x256）`、
-  进面板时的 `UI 替换：…`。
-- 生成/更新：`python _tools/make_ui_assets.py`（数据来自 `_tools/extract_ui.py` 的两版对比）。
-- 开关 `persist.camunlock.ui`（默认开）；`persist.camunlock.ui.trace 1` 会把相机请求的资源名记下来，
-  换机型时用来确认名字是不是同一套。
-- 说明：`layout/`、`shape`、`gradient` 这类资源不是图片，换不了也不该换；
-  相机若用 canvas 自绘（比如调色盘入口本身），不会走上面两个入口。
+  `HIT ui.skin → hooked=2，映射 N 项 …`、`UI 资源就绪：…（WxH）`、进面板时的 `UI 替换：…`。
+- 生成/更新：`python _tools/make_ui_assets.py`（素材来自 `_tools/extract_ui.py` 从 7.016.29 提取的 `_extract/ui_7016/`）。
+- 说明：相机若用 canvas 自绘（比如调色盘入口本身），不会走上面两个入口。
+  `persist.camunlock.ui.trace 1` 会把相机请求的资源名记下来，换机型核对命名用。
 
 ### 日志（诊断与导出）
 
 - 文件：`/data/user/0/com.oplus.camera/files/camunlock/adapt.log`（logcat 里 tag `CamUnlock`）。
-- 设置页「日志」区现在可以：开关写日志、开关细节 dump（滤镜组条目 / UI 替换明细）、
-  **一键导出到 `/sdcard/Download/camunlock-adapt-*.log`**、清空日志（导出后直接分享给作者就行）。
+- 设置页「日志」区只留一个 **导出日志**：复制到 `/sdcard/Download/camunlock-adapt-*.log`
+  （自检表、滤镜组内容、UI 换图明细全在里面），导出后直接分享就行。
 
 ### 适配与日志（给换机型用的）
 
@@ -221,6 +223,7 @@ CI（`.github/workflows/build.yml`）：push 到 `main` / PR / 手动 → JDK 21
 
 本仓库未声明开源许可证（默认保留所有权利），使用前请先确认机型与风险。
 
+- 作者：**LucasBlackLu** · 酷安 [@2201999](https://www.coolapk.com/u/2201999)
 - [libxposed API](https://github.com/libxposed/api) —— 模块框架
 - PUI 设计系统：作者 **天伞桜**（[GitHub](https://github.com/sakurakingfifth-debug/PUIInstaller) ·
   [酷安](https://www.coolapk.com/u/540690)）—— 界面骨架

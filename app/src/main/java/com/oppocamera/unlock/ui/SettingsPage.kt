@@ -70,8 +70,15 @@ fun SettingsPage(connected: Boolean, scoped: Boolean, root: Boolean) {
                     title = "GitHub",
                     subtitle = "喜欢我的工作就点个 Star",
                     showChevron = true,
-                    showDivider = false,
                     onClick = { Shell.openUrl(ctx, Const.GITHUB) }
+                )
+                PuiListRow(
+                    icon = PuiIcon.Heart,
+                    title = "酷安 @2201999",
+                    subtitle = "去酷安找我 / 反馈问题",
+                    showChevron = true,
+                    showDivider = false,
+                    onClick = { Shell.openUrl(ctx, Const.COOLAPK) }
                 )
             }
         }
@@ -146,49 +153,13 @@ fun SettingsPage(connected: Boolean, scoped: Boolean, root: Boolean) {
 
         item {
             Spacer(Modifier.height(22.dp))
-            PuiSectionHeader("界面")
-        }
-
-        item {
-            // UI 换图：用模块 assets/ui 里的图替换相机的调色盘 / 灵感构图图标（不换 APK）
-            var uiOn by remember { mutableStateOf(true) }
-            LaunchedEffect(Unit) {
-                thread { uiOn = Shell.run("getprop persist.camunlock.ui").out.trim() != "0" }
-            }
-            PuiGroup(null) {
-                PuiSwitchRow(
-                    icon = PuiIcon.Image,
-                    title = "UI 换图",
-                    subtitle = if (uiOn) "用 7.016 的图标 / 入口引导图替换（重启相机生效）" else "已关闭（用相机自带图）",
-                    checked = uiOn,
-                    enabled = root,
-                    showDivider = false,
-                    onChange = { on ->
-                        thread {
-                            Shell.run("setprop persist.camunlock.ui ${if (on) 1 else 0}")
-                            uiOn = on
-                            Shell.restartCamera()
-                        }
-                    }
-                )
-            }
-        }
-
-        item {
-            Spacer(Modifier.height(22.dp))
             PuiSectionHeader("日志")
         }
 
         item {
-            var logOn by remember { mutableStateOf(true) }
-            var dumpOn by remember { mutableStateOf(false) }
             var lines by remember { mutableStateOf(-1) }
             LaunchedEffect(Unit) {
-                thread {
-                    logOn = Shell.run("getprop persist.camunlock.log").out.trim() != "0"
-                    dumpOn = Shell.run("getprop persist.camunlock.log.dump").out.trim() == "1"
-                    lines = Shell.adaptLogLines()
-                }
+                thread { lines = Shell.adaptLogLines() }
             }
             fun toast(msg: String) {
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -196,64 +167,18 @@ fun SettingsPage(connected: Boolean, scoped: Boolean, root: Boolean) {
                 }
             }
             PuiGroup(null) {
-                PuiSwitchRow(
-                    icon = PuiIcon.List,
-                    title = "写日志",
-                    subtitle = if (logOn) {
-                        "logcat + 相机私有目录 camunlock/adapt.log"
-                    } else {
-                        "已关闭：适配自检表也不会写"
-                    },
-                    checked = logOn,
-                    enabled = root,
-                    showDivider = true,
-                    onChange = { on ->
-                        thread {
-                            Shell.run("setprop persist.camunlock.log ${if (on) 1 else 0}")
-                            logOn = on
-                            lines = Shell.adaptLogLines()
-                        }
-                    }
-                )
-                PuiSwitchRow(
-                    icon = PuiIcon.Filter,
-                    title = "细节 dump",
-                    subtitle = "滤镜组每个条目、UI 换图明细（行数很多，排完就关）",
-                    checked = dumpOn,
-                    enabled = root,
-                    showDivider = true,
-                    onChange = { on ->
-                        thread {
-                            Shell.run("setprop persist.camunlock.log.dump ${if (on) 1 else 0}")
-                            dumpOn = on
-                        }
-                    }
-                )
                 PuiListRow(
                     icon = PuiIcon.Download,
                     title = "导出日志",
-                    subtitle = "复制到 /sdcard/Download/camunlock-adapt-*.log",
+                    subtitle = "复制到 /sdcard/Download/camunlock-adapt-*.log（自检表 + 滤镜组 + UI 换图都在这）",
                     trailingText = if (lines >= 0) "$lines 行" else null,
                     showChevron = true,
+                    showDivider = false,
                     onClick = {
                         thread {
                             val r = Shell.exportAdaptLog()
                             lines = Shell.adaptLogLines()
                             toast(if (r.ok) "已导出：${r.out}" else "导出失败：${r.out}")
-                        }
-                    }
-                )
-                PuiListRow(
-                    icon = PuiIcon.Trash,
-                    title = "清空日志",
-                    subtitle = "adapt.log 清零，相机还在跑也没关系",
-                    showChevron = true,
-                    showDivider = false,
-                    onClick = {
-                        thread {
-                            Shell.clearAdaptLog()
-                            lines = Shell.adaptLogLines()
-                            toast("已清空")
                         }
                     }
                 )

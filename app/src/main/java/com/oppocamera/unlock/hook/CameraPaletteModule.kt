@@ -1180,8 +1180,14 @@ class CameraPaletteModule : XposedModule() {
     /** 资源名 → assets/ui 下的文件名（来自模块 APK 的 assets/ui/overrides.json）。 */
     private val uiOverrides = HashMap<String, String>()
 
+    /** raw 动画资源名 → assets/ui/raw 下的文件名（Lottie JSON 这类）。 */
+    private val uiRaw = HashMap<String, String>()
+
     /** 解出来的 Drawable，按资源名缓存。 */
     private val uiCache = HashMap<String, Drawable>()
+
+    /** raw 动画字节缓存。 */
+    private val uiRawCache = HashMap<String, ByteArray>()
 
     @Volatile private var uiHits = 0
     @Volatile private var uiChecked = false
@@ -1203,6 +1209,15 @@ class CameraPaletteModule : XposedModule() {
                 Adapt.warn("UI 资源缺失：$name → $file")
             } else {
                 Adapt.info("UI 资源就绪：$name ← $file（${bitmap.width}x${bitmap.height}）")
+            }
+        }
+        // raw 动画（Lottie JSON）也过一遍，确认打包没问题
+        uiRaw.forEach { (name, file) ->
+            val bytes = uiRawBytes(name)
+            if (bytes == null) {
+                Adapt.warn("UI 动画缺失：$name → raw/$file")
+            } else {
+                Adapt.info("UI 动画就绪：$name ← raw/$file（${bytes.size} B）")
             }
         }
     }
@@ -1235,6 +1250,7 @@ class CameraPaletteModule : XposedModule() {
             return
         }
         uiOverrides.putAll(map)
+        uiRaw.putAll(readUiRaw(apk))
 
         var n = 0
         runCatching {
@@ -1258,6 +1274,28 @@ class CameraPaletteModule : XposedModule() {
             }
             n++
         }.onFailure { log("hookUiSkin.setBackgroundResource: $it") }
+
+        // raw 动画（Lottie JSON 之类）：LottieCompositionFactory 就是调 openRawResource 读的
+        runCatching {
+            val rc = cl.loadClass("android.content.res.Resources")
+            val m = rc.getDeclaredMethod("openRawResource", Integer.TYPE)
+            hook(m).intercept { chain ->
+                val id = chain.getArg(0) as? Int
+                val resources = chain.thisObject as? android.content.res.Resources
+                if (id != null && resources != null && uiRaw.isNotEmpty()) {
+                    val name = runCatching {
+                        resources.getResourceName(id).substringAfter(":raw/")
+                    }.getOrNull()
+                    val bytes = name?.let { uiRawBytes(it) }
+                    if (bytes != null) {
+                        Adapt.detail("动画替换：$name（${bytes.size} B）")
+                        return@intercept java.io.ByteArrayInputStream(bytes)
+                    }
+                }
+                chain.proceed()
+            }
+            n++
+        }.onFailure { log("hookUiSkin.openRawResource: $it") }
 
         if (n == 0) {
             Adapt.miss("ui.skin", "调色盘 / 灵感构图 UI 换图", "两个资源入口都没挂上")
@@ -1317,6 +1355,38 @@ class CameraPaletteModule : XposedModule() {
             out
         }
     }.getOrDefault(emptyMap())
+
+    /** 读 overrides.json 里的 raw 段（动画资源名 → 文件名）。 */
+    private fun readUiRaw(apk: String): Map<String, String> = runCatching {
+        ZipFile(apk).use { zip ->
+            val entry = zip.getEntry("assets/ui/overrides.json")
+                ?: return@use emptyMap<String, String>()
+            val text = zip.getInputStream(entry).use { it.readBytes().toString(Charsets.UTF_8) }
+            val obj = org.json.JSONObject(text).optJSONObject("raw")
+                ?: return@use emptyMap<String, String>()
+            val out = LinkedHashMap<String, String>()
+            obj.keys().forEach { key ->
+                val file = obj.optString(key)
+                if (file.isNotEmpty()) out[key] = file
+            }
+            out
+        }
+    }.getOrDefault(emptyMap())
+
+    /** 从模块 APK 里读 raw 动画字节（缓存）。 */
+    private fun uiRawBytes(name: String): ByteArray? {
+        synchronized(uiRawCache) { uiRawCache[name]?.let { return it } }
+        val file = uiRaw[name] ?: return null
+        val apk = moduleApkPath() ?: return null
+        val bytes = runCatching {
+            ZipFile(apk).use { zip ->
+                val entry = zip.getEntry("assets/ui/raw/$file") ?: return@use null
+                zip.getInputStream(entry).use { it.readBytes() }
+            }
+        }.getOrNull() ?: return null
+        synchronized(uiRawCache) { uiRawCache[name] = bytes }
+        return bytes
+    }
 
     // ------------------------------------------------------------ deploy
 

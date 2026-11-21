@@ -6,6 +6,9 @@ object Const {
     const val GITHUB = "https://github.com/LucasBlackLu/OPPOCameraUnlock"
     const val RELEASES = "$GITHUB/releases/latest"
 
+    /** 作者酷安。 */
+    const val COOLAPK = "https://www.coolapk.com/u/2201999"
+
     /** 模块框架。 */
     const val LIBXPOSED = "https://github.com/libxposed/api"
 
